@@ -19,7 +19,7 @@ _SHLIBS_BUCKETS = {"runtime", "bin", "plugins", "other"}
 # Buckets that may carry inferred runtime dependencies.
 _RUNTIME_BUCKETS = {"runtime", "bin", "plugins", "other"}
 
-_MAINTAINER = "Joseph Wiley <joe@example.com>"
+_MAINTAINER = "Joseph Wiley <flux.abyss@proton.me>"
 _BUILD_DEPENDS = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
 
 

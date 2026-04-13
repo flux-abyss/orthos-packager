@@ -1,26 +1,31 @@
+# Orthos working dirs
+.orthos/
+.packager-work/
+.orthos-config.json
+
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Testing
+*.py[cod]
+*.so
+*.egg-info/
 .pytest_cache/
+.mypy_cache/
 .coverage
 htmlcov/
-
-# Type checking
-.mypy_cache/
 
 # Virtual environments
 .venv/
 venv/
+env/
 
-# Build and distribution
+# Build / distribution
 build/
 dist/
 
-# Debian build artifacts
+# Logs
+*.log
+
+# Debian package artifacts
 *.deb
 *.buildinfo
 *.changes
@@ -29,45 +34,24 @@ dist/
 *.diff.gz
 *.dsc
 
-# Editors
+# Debian build junk inside source tree
+debian/.debhelper/
+debian/tmp/
+debian/files
+debian/*.substvars
+debian/*-dbgsym/
+debian/debhelper-build-stamp
+debian/*/
+
+# Keep real source metadata
+!debian/source/
+!debian/source/format
+
+# Editor / OS junk
 .vscode/
 .idea/
 *.swp
-*~
-
-# Orthos packager working dirs
-.orthos/
-.packager-work/
-
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.so
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-
-# Logs
-*.log
-
-# Temp / editor junk
-*~
-*.swp
 *.swo
+*~
 .DS_Store
-
-# Generated Debian packaging (ONLY if you don’t want to track it yet)
-# Uncomment if needed later:
-# debian/
-
-# Local overrides / configs (future-proofing)
-.orthos-config.json
+Thumbs.db

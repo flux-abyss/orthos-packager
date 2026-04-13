@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# dev-mktar.sh — create a source archive of the warp project
+# mktar.sh — create a source archive of the project
 #
 # Usage:
-#   bash dev-mktar.sh                  # tracked files only (default)
-#   bash dev-mktar.sh --include-untracked  # tracked + untracked (excluding .gitignored)
+#   bash mktar.sh                  # tracked files only (default)
+#   bash mktar.sh --include-untracked  # tracked + untracked (excluding .gitignored)
 #
 # The archive is always written to the repository root.
 # Tarballs, .dsc files, .diff.gz files, and missing paths are always excluded.
