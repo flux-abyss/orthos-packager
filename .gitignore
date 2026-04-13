@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build and distribution
+build/
+dist/
+
+# Debian build artifacts
+*.deb
+*.buildinfo
+*.changes
+*.tar.gz
+*.tar.xz
+*.diff.gz
+*.dsc
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Orthos packager working dirs
+.orthos/
+.packager-work/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# Temp / editor junk
+*~
+*.swp
+*.swo
+.DS_Store
+
+# Generated Debian packaging (ONLY if you don’t want to track it yet)
+# Uncomment if needed later:
+# debian/
+
+# Local overrides / configs (future-proofing)
+.orthos-config.json

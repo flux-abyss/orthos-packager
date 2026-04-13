@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orthos-packager"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Deterministic Debian packager for Meson projects."
+
+[project.scripts]
+orthos-packager = "debcraft.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["debcraft*"]
