@@ -63,7 +63,8 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     result: dict[str, Any] = {
         "artifacts": artifacts,
-        "debian_dir": str(src_debian),
+        "generated_debian_dir": str(src_debian),
+        "target_debian_dir": str(dest_debian),
         "failure_step": failure_step,
         "log_file": str(log_file),
         "repo_path": str(repo),
