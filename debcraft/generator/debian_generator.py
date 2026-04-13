@@ -6,13 +6,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from debcraft.deps import infer_dependencies
 from debcraft.utils.fs import ensure_dir, write_json
+from debcraft.utils.log import info
 
 _PLAN_FILE = "package-plan.json"
 _RESULT_FILE = "generate-result.json"
 
 # Buckets that warrant ${shlibs:Depends} in the control file.
 _SHLIBS_BUCKETS = {"runtime", "bin", "plugins", "other"}
+
+# Buckets that may carry inferred runtime dependencies.
+_RUNTIME_BUCKETS = {"runtime", "bin", "plugins", "other"}
 
 _MAINTAINER = "Joseph Wiley <joe@example.com>"
 _BUILD_DEPENDS = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
@@ -45,7 +50,11 @@ def _binary_pkg_name(repo_name: str, bucket_name: str) -> str:
     return f"{safe}-{bucket_name}"
 
 
-def _gen_control(repo_name: str, non_empty: list[dict[str, Any]]) -> str:
+def _gen_control(
+    repo_name: str,
+    non_empty: list[dict[str, Any]],
+    inferred_deps: list[str],
+) -> str:
     """Return the full text of debian/control."""
     src_name = repo_name.replace("_", "-")
     lines: list[str] = [
@@ -63,6 +72,8 @@ def _gen_control(repo_name: str, non_empty: list[dict[str, Any]]) -> str:
         depends = ["${misc:Depends}"]
         if bucket["name"] in _SHLIBS_BUCKETS:
             depends.append("${shlibs:Depends}")
+        if bucket["name"] in _RUNTIME_BUCKETS:
+            depends.extend(inferred_deps)
         lines += [
             f"Package: {pkg}",
             "Architecture: any",
@@ -139,7 +150,15 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         rel.write_text(content, encoding="utf-8")
         generated.append(str(rel))
 
-    write_text(debian_dir / "control", _gen_control(repo_name, non_empty))
+    dep_report = infer_dependencies(repo)
+    inferred_deps = dep_report.sorted_depends()
+    dep_summary = ", ".join(inferred_deps) if inferred_deps else "(none)"
+    info(f"inferred depends: {dep_summary}")
+    for pkg, pkg_reasons in dep_report.sorted_reasons():
+        info(f"  inferred reason: {pkg} <- {'; '.join(pkg_reasons)}")
+
+    write_text(debian_dir / "control",
+               _gen_control(repo_name, non_empty, inferred_deps))
 
     rules_path = debian_dir / "rules"
     write_text(rules_path, _gen_rules())

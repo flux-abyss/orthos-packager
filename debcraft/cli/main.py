@@ -2,6 +2,8 @@
 
 import argparse
 import sys
+import glob
+import subprocess
 from pathlib import Path
 
 from debcraft.analyze import analyze as run_analyze
@@ -78,6 +80,16 @@ def _build_parser() -> argparse.ArgumentParser:
     suggest_p.add_argument("repo_path",
                            metavar="PATH",
                            help="Local path to the repository.")
+
+    smoke = sub.add_parser(
+        "smoke",
+        help="Run full pipeline, install packages, and resolve dependencies.",
+    )
+    smoke.add_argument(
+        "repo_path",
+        metavar="PATH",
+        help="Local path to the repository.",
+    )
 
     return parser
 
@@ -241,6 +253,45 @@ def _cmd_build(repo_path: str) -> int:
     return rc
 
 
+def _cmd_smoke(repo_path: str) -> int:
+    """Build, install, and resolve dependencies for a repository."""
+    steps = [
+        _cmd_scan,
+        _cmd_stage,
+        _cmd_inventory,
+        _cmd_classify,
+        _cmd_generate,
+        _cmd_build,
+    ]
+
+    # run full pipeline
+    for step in steps:
+        rc = step(repo_path)
+        if rc != 0:
+            return rc
+
+    # install artifacts
+    debs = sorted(glob.glob(f"{repo_path}-*.deb"))
+    if not debs:
+        error("no .deb artifacts found")
+        return 1
+
+    info(f"installing: {', '.join(debs)}")
+
+    rc = subprocess.call(["sudo", "dpkg", "-i", *debs])
+    if rc != 0:
+        info("dpkg reported issues, attempting to fix dependencies...")
+
+    # resolve dependencies
+    rc = subprocess.call(["sudo", "apt", "-f", "install", "-y"])
+    if rc != 0:
+        error("apt failed to resolve dependencies")
+        return rc
+
+    info("smoke test complete ✔")
+    return 0
+
+
 def _cmd_analyze(repo_path: str) -> int:
     """Read build-result.json and build.log and emit an analysis summary."""
     try:
@@ -346,6 +397,9 @@ def main() -> None:
 
     if args.command == "suggest":
         sys.exit(_cmd_suggest(args.repo_path))
+
+    if args.command == "smoke":
+        sys.exit(_cmd_smoke(args.repo_path))
 
 
 if __name__ == "__main__":
