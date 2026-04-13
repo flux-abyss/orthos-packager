@@ -11,6 +11,7 @@ from debcraft.classifier.artifact_classifier import classify as run_classify
 from debcraft.core.repo_probe import probe
 from debcraft.generator.debian_generator import generate as run_generate
 from debcraft.inventory.install_inventory import build_inventory
+from debcraft.suggest import suggest as run_suggest
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import error, info
 
@@ -69,6 +70,12 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze_p = sub.add_parser("analyze",
                                help="Analyze the last build result and log.")
     analyze_p.add_argument("repo_path",
+                           metavar="PATH",
+                           help="Local path to the repository.")
+
+    suggest_p = sub.add_parser("suggest",
+                               help="Suggest a fix for the last build failure.")
+    suggest_p.add_argument("repo_path",
                            metavar="PATH",
                            help="Local path to the repository.")
 
@@ -266,6 +273,47 @@ def _cmd_analyze(repo_path: str) -> int:
     return 0
 
 
+def _cmd_suggest(repo_path: str) -> int:
+    """Read analyze-result.json and emit a structured suggestion."""
+    try:
+        meta = probe(repo_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1
+
+    try:
+        _rc, result, suggest_file = run_suggest(meta)
+    except FileNotFoundError as exc:
+        error(str(exc))
+        return 1
+
+    status = "success" if result["success"] else "failure"
+    info(f"repo:    {meta['repo_path']}")
+    info(f"result:  {status}")
+
+    if result["category"]:
+        info(f"category: {result['category']}")
+
+    if result["suggestion_type"]:
+        info(f"type:     {result['suggestion_type']}")
+
+    if result["target_file"]:
+        info(f"target:   {result['target_file']}")
+
+    if result["suggested_change"]:
+        info(f"change:   {result['suggested_change']}")
+
+    if result["next_step"]:
+        info(f"next:     {result['next_step']}")
+
+    if result["suggested_command"]:
+        info(f"command:  {result['suggested_command']}")
+
+    info(f"confidence: {result['confidence']}")
+    info(f"wrote:   {suggest_file}")
+    return 0
+
+
 def main() -> None:
     """Run the orthos-packager command-line interface."""
     parser = _build_parser()
@@ -295,6 +343,9 @@ def main() -> None:
 
     if args.command == "analyze":
         sys.exit(_cmd_analyze(args.repo_path))
+
+    if args.command == "suggest":
+        sys.exit(_cmd_suggest(args.repo_path))
 
 
 if __name__ == "__main__":
