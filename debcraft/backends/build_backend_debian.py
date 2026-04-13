@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from debcraft.backends.build_backend_meson import _clean_env
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.shell import run_logged
 
@@ -56,6 +57,7 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         ["dpkg-buildpackage", "-us", "-uc", "-b"],
         log_file=log_file,
         cwd=repo,
+        env=_clean_env(),
     )
 
     failure_step: str | None = None if ok else "dpkg-buildpackage"

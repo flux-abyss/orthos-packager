@@ -10,6 +10,29 @@ from debcraft.utils.shell import run_logged
 _RESULT_FILE = "stage-result.json"
 StageResult = dict[str, Any]
 
+# System paths that must appear first so Meson finds system Python, not venv.
+_SYSTEM_PATH_PREPEND = ["/usr/bin", "/bin"]
+
+
+def _clean_env() -> dict[str, str]:
+    """Return a copy of os.environ with the active venv stripped from PATH.
+
+    Ensures Meson subprocesses discover system Python rather than any
+    interpreter embedded in the caller's virtual environment.
+    """
+    env = dict(os.environ)
+    venv = env.get("VIRTUAL_ENV", "")
+    venv_bin = os.path.join(venv, "bin") if venv else ""
+
+    parts = env.get("PATH", "").split(os.pathsep)
+    parts = [p for p in parts if p and p != venv_bin]
+    for d in reversed(_SYSTEM_PATH_PREPEND):
+        if d not in parts:
+            parts.insert(0, d)
+
+    env["PATH"] = os.pathsep.join(parts)
+    return env
+
 
 def _orthos_dir(repo_path: Path) -> Path:
     """Return the scratch directory for a target repository."""
@@ -44,10 +67,21 @@ def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
     success = True
     failure_step: str | None = None
 
+    clean = _clean_env()
+
     ok, _ = run_logged(
-        ["meson", "setup", str(build_dir),
-         str(repo)],
+        [
+            "meson",
+            "setup",
+            str(build_dir),
+            str(repo),
+            "--prefix=/usr",
+            "--sysconfdir=/etc",
+            "--localstatedir=/var",
+            "--libdir=lib/x86_64-linux-gnu",
+        ],
         log_file=log_file,
+        env=clean,
     )
     if not ok:
         success = False
@@ -57,17 +91,18 @@ def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
         ok, _ = run_logged(
             ["meson", "compile", "-C", str(build_dir)],
             log_file=log_file,
+            env=clean,
         )
         if not ok:
             success = False
             failure_step = "meson compile"
 
     if success:
-        env = {**os.environ, "DESTDIR": str(stage_dir)}
+        install_env = {**clean, "DESTDIR": str(stage_dir)}
         ok, _ = run_logged(
             ["meson", "install", "-C", str(build_dir)],
             log_file=log_file,
-            env=env,
+            env=install_env,
         )
         if not ok:
             success = False
