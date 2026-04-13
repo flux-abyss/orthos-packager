@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from debcraft.backends.build_backend_meson import stage as meson_stage
+from debcraft.classifier.artifact_classifier import classify as run_classify
 from debcraft.core.repo_probe import probe
 from debcraft.inventory.install_inventory import build_inventory
 from debcraft.utils.fs import ensure_dir, write_json
@@ -44,10 +45,17 @@ def _build_parser() -> argparse.ArgumentParser:
                            metavar="PATH",
                            help="Local path to the repository.")
 
+    classify = sub.add_parser("classify",
+                              help="Group inventory into package buckets.")
+    classify.add_argument("repo_path",
+                          metavar="PATH",
+                          help="Local path to the repository.")
+
     return parser
 
 
 def _cmd_scan(repo_path: str) -> int:
+    """Run the scan command and write package metadata JSON."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
@@ -72,6 +80,7 @@ def _cmd_scan(repo_path: str) -> int:
 
 
 def _cmd_stage(repo_path: str) -> int:
+    """Run the Meson staging pipeline for a repository."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
@@ -98,6 +107,7 @@ def _cmd_stage(repo_path: str) -> int:
 
 
 def _cmd_inventory(repo_path: str) -> int:
+    """Inventory the staged install tree and write install-inventory.json."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
@@ -122,6 +132,31 @@ def _cmd_inventory(repo_path: str) -> int:
     return rc
 
 
+def _cmd_classify(repo_path: str) -> int:
+    """Group inventory entries into package buckets and write package-plan.json."""
+    try:
+        meta = probe(repo_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1
+
+    try:
+        rc, result = run_classify(meta)
+    except FileNotFoundError as exc:
+        error(str(exc))
+        return 1
+
+    info(f"repo:    {result['repo_path']}")
+    info(f"inv:     {result['inventory_file']}")
+    info(f"files:   {result['total_files']}")
+
+    for bucket in result["package_buckets"]:
+        info(f"  {bucket['name']:<10} {bucket['file_count']}")
+
+    info(f"wrote:   {result['plan_file']}")
+    return rc
+
+
 def main() -> None:
     """Run the orthos-packager command-line interface."""
     parser = _build_parser()
@@ -139,6 +174,9 @@ def main() -> None:
 
     if args.command == "inventory":
         sys.exit(_cmd_inventory(args.repo_path))
+
+    if args.command == "classify":
+        sys.exit(_cmd_classify(args.repo_path))
 
 
 if __name__ == "__main__":
