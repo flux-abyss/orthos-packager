@@ -150,7 +150,8 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     # One .install file per non-empty bucket.
     for bucket in non_empty:
-        install_name = f"{bucket['name']}.install"
+        pkg_name = _binary_pkg_name(repo_name, bucket["name"])
+        install_name = f"{pkg_name}.install"
         write_text(debian_dir / install_name, _gen_install(bucket["files"]))
 
     binary_packages = [

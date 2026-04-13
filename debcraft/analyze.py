@@ -31,6 +31,14 @@ _CATEGORIES: list[tuple[str, list[str]]] = [
         "parse error in",
         "error in Depends",
     ]),
+    # upstream_test_failure must precede bad_debian_rules so
+    # "dh_auto_test: error" is not swallowed by the generic "dh_" trigger.
+    ("upstream_test_failure", [
+        "dh_auto_test: error",
+        "meson test --verbose returned exit code",
+        "Validate desktop file FAIL",
+        "desktop-file-validate",
+    ]),
     ("bad_debian_rules", [
         "dh_",
         "override_dh_",
@@ -67,17 +75,46 @@ def _load_log(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
 
 
+# Informational prefixes that are noisy and should not count as diagnostics.
+_INFO_PREFIXES = ("dpkg-buildpackage: info:",)
+
+# Substrings that strongly indicate a real failure line.
+_FAIL_KEYWORDS = (
+    "error:",
+    "Error:",
+    "ERROR",
+    "FAIL",
+    "failed",
+    "Failed",
+    "FAILED",
+    "fatal",
+    "Fatal",
+    "returned exit code",
+    "subprocess returned exit status",
+    "dh_auto_test: error",
+    "desktop-file-validate",
+    "Validate desktop file FAIL",
+    "No such",
+    "unmet",
+    "cannot",
+    "make: ***",
+)
+
+
 def _relevant_lines(lines: list[str]) -> list[str]:
-    """Return lines that look like errors, warnings, or failures — max 5."""
-    keywords = ("error", "Error", "ERROR", "failed", "Failed", "FAILED",
-                "fatal", "Fatal", "No such", "unmet", "unknown field", "cannot",
-                "dpkg-buildpackage:", "dpkg-source:", "make: ***", "dh_")
+    """Return real failure lines from the log — max 5.
+
+    Skips informational lines (e.g. dpkg-buildpackage: info:) that are
+    not diagnostic.
+    """
     hits: list[str] = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        if any(kw in stripped for kw in keywords):
+        if any(stripped.startswith(p) for p in _INFO_PREFIXES):
+            continue
+        if any(kw in stripped for kw in _FAIL_KEYWORDS):
             hits.append(stripped)
         if len(hits) == 5:
             break
@@ -109,6 +146,8 @@ def _make_summary(success: bool, category: str | None,
             "The debian/control file contains a parse error or unknown field.",
         "bad_debian_rules":
             "The debian/rules file caused a debhelper failure.",
+        "upstream_test_failure":
+            "The build failed during upstream tests or validation.",
         "dpkg_build_failure":
             "dpkg-buildpackage reported a fatal error.",
         "unknown":

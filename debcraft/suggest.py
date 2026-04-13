@@ -153,6 +153,18 @@ UNKNOWN_REASONING = [
     "manual log inspection is required",
 ]
 
+# Upstream test / validation failure
+UTF_SUGGESTED_CHANGE = (
+    "An upstream test or validation step failed during the package build.")
+UTF_NEXT_STEP = (
+    "Inspect the failing test or validation command in the build log, "
+    "then check the upstream test output for the specific assertion.")
+UTF_REASONING = [
+    "analyze classified the failure as upstream_test_failure",
+    "dh_auto_test or meson test exited non-zero during package build",
+    "the failure is in upstream code, not in the packaging files",
+]
+
 _RULES: dict[str, dict[str, Any]] = {
     "missing_build_dependency": {
         "suggestion_type": "control_edit",
@@ -198,6 +210,15 @@ _RULES: dict[str, dict[str, Any]] = {
         "suggested_command": "cat .orthos/<repo>/logs/build.log",
         "reasoning": DBF_REASONING,
         "confidence": "low",
+    },
+    "upstream_test_failure": {
+        "suggestion_type": "manual_investigation",
+        "target_file_fn": _target_null,
+        "suggested_change": UTF_SUGGESTED_CHANGE,
+        "next_step": UTF_NEXT_STEP,
+        "suggested_command": "cat .orthos/<repo>/logs/build.log",
+        "reasoning": UTF_REASONING,
+        "confidence": "medium",
     },
     "unknown": {
         "suggestion_type": "manual_investigation",
