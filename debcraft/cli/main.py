@@ -7,6 +7,7 @@ from pathlib import Path
 from debcraft.backends.build_backend_meson import stage as meson_stage
 from debcraft.classifier.artifact_classifier import classify as run_classify
 from debcraft.core.repo_probe import probe
+from debcraft.generator.debian_generator import generate as run_generate
 from debcraft.inventory.install_inventory import build_inventory
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import error, info
@@ -48,6 +49,12 @@ def _build_parser() -> argparse.ArgumentParser:
     classify = sub.add_parser("classify",
                               help="Group inventory into package buckets.")
     classify.add_argument("repo_path",
+                          metavar="PATH",
+                          help="Local path to the repository.")
+
+    generate = sub.add_parser(
+        "generate", help="Generate a debian/ skeleton from the package plan.")
+    generate.add_argument("repo_path",
                           metavar="PATH",
                           help="Local path to the repository.")
 
@@ -157,6 +164,30 @@ def _cmd_classify(repo_path: str) -> int:
     return rc
 
 
+def _cmd_generate(repo_path: str) -> int:
+    """Generate a debian/ skeleton from the package plan."""
+    try:
+        meta = probe(repo_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1
+
+    try:
+        rc, result = run_generate(meta)
+    except FileNotFoundError as exc:
+        error(str(exc))
+        return 1
+
+    info(f"repo:    {result['repo_path']}")
+    info(f"plan:    {result['plan_file']}")
+    info(f"debian:  {result['debian_dir']}")
+    info(f"files:   {len(result['generated_files'])}")
+    for pkg in result["binary_packages"]:
+        info(f"  {pkg}")
+    info(f"wrote:   {result['debian_dir']}")
+    return rc
+
+
 def main() -> None:
     """Run the orthos-packager command-line interface."""
     parser = _build_parser()
@@ -177,6 +208,9 @@ def main() -> None:
 
     if args.command == "classify":
         sys.exit(_cmd_classify(args.repo_path))
+
+    if args.command == "generate":
+        sys.exit(_cmd_generate(args.repo_path))
 
 
 if __name__ == "__main__":
