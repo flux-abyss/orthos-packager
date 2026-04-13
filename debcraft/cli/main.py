@@ -6,11 +6,18 @@ from pathlib import Path
 
 from debcraft.backends.build_backend_meson import stage as meson_stage
 from debcraft.core.repo_probe import probe
+from debcraft.inventory.install_inventory import build_inventory
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import error, info
 
 _ORTHOS_DIR = ".orthos"
 _META_FILE = "package-meta.json"
+
+
+def _orthos_dir(repo_path: Path) -> Path:
+    """Return the scratch directory for a target repository."""
+    base = Path.cwd() / ".orthos"
+    return base / repo_path.name
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -31,6 +38,12 @@ def _build_parser() -> argparse.ArgumentParser:
                        metavar="PATH",
                        help="Local path to the repository.")
 
+    inventory = sub.add_parser("inventory",
+                               help="Inventory the staged install tree.")
+    inventory.add_argument("repo_path",
+                           metavar="PATH",
+                           help="Local path to the repository.")
+
     return parser
 
 
@@ -41,7 +54,7 @@ def _cmd_scan(repo_path: str) -> int:
         error(str(exc))
         return 1
 
-    out_dir = Path(meta["repo_path"]) / _ORTHOS_DIR
+    out_dir = _orthos_dir(Path(meta["repo_path"]))
     ensure_dir(out_dir)
     out_file = out_dir / _META_FILE
     write_json(out_file, meta)
@@ -84,6 +97,31 @@ def _cmd_stage(repo_path: str) -> int:
     return rc
 
 
+def _cmd_inventory(repo_path: str) -> int:
+    try:
+        meta = probe(repo_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1
+
+    try:
+        rc, result = build_inventory(meta)
+    except FileNotFoundError as exc:
+        error(str(exc))
+        return 1
+
+    info(f"repo:    {result['repo_path']}")
+    info(f"stage:   {result['stage_dir']}")
+    info(f"files:   {result['total_files']}")
+
+    for kind, count in sorted(result["counts_by_kind"].items()):
+        info(f"  {kind:<12} {count}")
+
+    info(f"wrote:   {result['inventory_file']}")
+
+    return rc
+
+
 def main() -> None:
     """Run the orthos-packager command-line interface."""
     parser = _build_parser()
@@ -98,6 +136,9 @@ def main() -> None:
 
     if args.command == "stage":
         sys.exit(_cmd_stage(args.repo_path))
+
+    if args.command == "inventory":
+        sys.exit(_cmd_inventory(args.repo_path))
 
 
 if __name__ == "__main__":
