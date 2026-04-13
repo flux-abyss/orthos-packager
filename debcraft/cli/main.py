@@ -9,6 +9,13 @@ from pathlib import Path
 from debcraft.analyze import analyze as run_analyze
 from debcraft.backends.build_backend_debian import build as run_build
 from debcraft.backends.build_backend_meson import stage as meson_stage
+from debcraft.build_deps import (
+    install_missing_build_dependencies,
+    install_missing_pkgconfig_dependencies,
+    resolve_build_dependencies,
+    scan_meson_dependencies,
+    validate_pkg_config_closure,
+)
 from debcraft.classifier.artifact_classifier import classify as run_classify
 from debcraft.core.repo_probe import probe
 from debcraft.generator.debian_generator import generate as run_generate
@@ -253,8 +260,104 @@ def _cmd_build(repo_path: str) -> int:
     return rc
 
 
+def _log_and_install_meson_deps(names: list[str]) -> int:
+    """Resolve + log + install Meson-declared build dependencies."""
+    report = resolve_build_dependencies(names)
+    for result in report.results:
+        if result.package is None:
+            error(
+                f"build-dep unresolved: {result.meson_name} — {result.warning}")
+            continue
+        flag = " [installed]" if result.is_installed else ""
+        bodhi_tag = " (bodhi)" if result.is_bodhi else ""
+        info(f"build-dep resolved: {result.meson_name} -> "
+             f"{result.package}{bodhi_tag} [source: {result.source}]{flag}")
+        if result.warning:
+            info(f"  warning: {result.warning}")
+
+    unresolved = report.unresolved_names()
+    if unresolved:
+        error("cannot continue: unresolved build dependencies: "
+              f"{', '.join(unresolved)}")
+        return 1
+
+    missing = report.missing_packages()
+    if not missing:
+        info("build-deps: all resolved packages already installed")
+        return 0
+
+    info(f"build-deps: installing {len(missing)} missing packages: "
+         f"{', '.join(missing)}")
+    rc = install_missing_build_dependencies(report)
+    if rc != 0:
+        error("build-deps: apt install failed")
+    return rc
+
+
+def _run_pkgconfig_closure(names: list[str]) -> int:
+    """Validate pkg-config closure and install anything still missing."""
+    info("pkg-config: validating closure for discovered dependency names")
+    for name in names:
+        info(f"pkg-config: checking {name}")
+    closure = validate_pkg_config_closure(names)
+
+    for pkg_name, (required_by, pkg) in sorted(closure.missing.items()):
+        resolved = pkg if pkg else "(unresolved)"
+        info(f"pkg-config missing: {pkg_name} (required by {required_by}) "
+             f"-> {resolved}")
+    for w in closure.warnings:
+        info(f"  warning: {w}")
+
+    if closure.unresolved:
+        for name in closure.unresolved:
+            error(f"pkg-config: cannot satisfy '{name}' after "
+                  f"{closure.retries} retries")
+        return 1
+
+    if not closure.missing:
+        info("pkg-config closure satisfied")
+        return 0
+
+    to_install = sorted({pkg for (_, pkg) in closure.missing.values() if pkg})
+    info(f"pkg-config deps: installing {len(to_install)} missing "
+         f"package(s): {', '.join(to_install)}")
+    rc = install_missing_pkgconfig_dependencies(closure)
+    if rc != 0:
+        error("pkg-config deps: apt install failed")
+        return rc
+
+    closure2 = validate_pkg_config_closure(names)
+    if not closure2.all_satisfied():
+        for name in closure2.unresolved:
+            error(f"pkg-config: still failing after install: {name}")
+        return 1
+
+    info("pkg-config closure satisfied")
+    return 0
+
+
+def _resolve_and_install_build_deps(repo_path: str) -> int:
+    """Scan meson.build, resolve+install build deps, then close pkg-config."""
+    repo = Path(repo_path)
+    names = scan_meson_dependencies(repo)
+    if not names:
+        info("build-deps: no meson dependency() declarations found")
+        return 0
+
+    info(f"build-deps: discovered {len(names)} meson dependency names")
+    rc = _log_and_install_meson_deps(names)
+    if rc != 0:
+        return rc
+    return _run_pkgconfig_closure(names)
+
+
 def _cmd_smoke(repo_path: str) -> int:
     """Build, install, and resolve dependencies for a repository."""
+    # Resolve + install build dependencies before the pipeline runs.
+    rc = _resolve_and_install_build_deps(repo_path)
+    if rc != 0:
+        return rc
+
     steps = [
         _cmd_scan,
         _cmd_stage,

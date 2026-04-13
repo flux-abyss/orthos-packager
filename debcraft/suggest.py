@@ -1,9 +1,9 @@
-"""Phase 8 — Suggest: rule-based advisor over analyze-result.json.
+"""Rule-based advisor over analyze-result.json.
 
 Reads existing artifacts and produces suggest-result.json.
 Does not modify any file in the repo or the generated debian/ directory.
-Designed so a future AI backend can replace _apply_rules() without touching
-anything else.
+Designed so a future AI backend can replace _apply_rules() without changing
+the surrounding pipeline.
 """
 
 import json
