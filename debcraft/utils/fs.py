@@ -11,4 +11,5 @@ def ensure_dir(path: Path) -> None:
 
 def write_json(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path*."""
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")

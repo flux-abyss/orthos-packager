@@ -13,7 +13,10 @@ echo "========================================"
 echo "Running lint auto-fix (YAPF)"
 echo "========================================"
 
-python3 -m yapf --style google --in-place --recursive packager
+FILES=$(find debcraft -name "*.py")
+if [[ -n "$FILES" ]]; then
+  python3 -m yapf --style google --in-place $FILES
+fi
 
 echo ""
 echo "========================================"

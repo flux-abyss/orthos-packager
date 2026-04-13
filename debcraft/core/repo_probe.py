@@ -3,7 +3,6 @@
 import re
 from pathlib import Path
 
-
 # Matches: project('name', ...) or project("name", ...)
 _RE_PROJECT_NAME = re.compile(r"""project\s*\(\s*['"]([^'"]+)['"]""")
 
