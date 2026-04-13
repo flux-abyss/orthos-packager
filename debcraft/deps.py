@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -49,13 +50,25 @@ class DependencyReport:
                 for pkg in sorted(self.depends)]
 
 
-def infer_dependencies(repo: str | Path) -> DependencyReport:
-    """Scan a repository tree and infer runtime dependencies."""
+def infer_dependencies(
+    repo: str | Path,
+    stage_dir: Path | None = None,
+) -> DependencyReport:
+    """Scan a repository tree and infer runtime dependencies.
+
+    Args:
+        repo: path to the source repository (used for Python/GI/CLI scanning).
+        stage_dir: optional path to the staged install tree; when supplied,
+            ELF binaries are located there and ldd is run against them.
+    """
     root = Path(repo)
     report = DependencyReport()
 
     for py_file in root.rglob("*.py"):
         _scan_python_file(py_file, report)
+
+    if stage_dir is not None:
+        _scan_elf_tree(stage_dir, report)
 
     return report
 
@@ -191,3 +204,98 @@ def _extract_command_name(node: ast.Call) -> str | None:
             return parts[0]
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# ELF runtime dependency inference
+# ---------------------------------------------------------------------------
+
+_ELF_MAGIC = b"\x7fELF"
+
+# Libraries whose owning package is noise for runtime Depends:
+#   linux-vdso is a kernel artefact, not a real package.
+#   libc6 / libm are pulled in transitively by almost everything and cause
+#   excessive pin-downs, so we skip them for this first pass.
+_ELF_SKIP_PACKAGES = {"libc6", "libm6"}
+
+
+def _is_elf(path: Path) -> bool:
+    """Return True when the file starts with the ELF magic bytes."""
+    try:
+        with path.open("rb") as fh:
+            return fh.read(4) == _ELF_MAGIC
+    except OSError:
+        return False
+
+
+def _ldd_libs(elf: Path) -> list[str]:
+    """Return absolute resolved paths of shared libraries from ldd output.
+
+    Lines we care about look like:
+        libfoo.so.1 => /usr/lib/x86_64-linux-gnu/libfoo.so.1 (0x...)
+    Lines for vdso / not-found are skipped.
+    """
+    try:
+        result = subprocess.run(
+            ["ldd", str(elf)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+    paths: list[str] = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        # Format: <soname> => <path> (addr)  — we want index 2
+        if len(parts) >= 3 and parts[1] == "=>" and parts[2].startswith("/"):
+            paths.append(parts[2])
+    return paths
+
+
+def _dpkg_owner(lib_path: str) -> str | None:
+    """Return the Debian package owning *lib_path*, or None.
+
+    Uses ``realpath`` to resolve symlinks before querying ``dpkg -S``,
+    because /lib is a symlink to /usr/lib on modern systems and dpkg's
+    index stores the canonical path.
+    """
+    try:
+        real = str(Path(lib_path).resolve())
+        result = subprocess.run(
+            ["dpkg", "-S", real],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    line = result.stdout.strip().splitlines(
+    )[0] if result.returncode == 0 else ""
+    if ":" in line:
+        return line.split(":")[0].strip() or None
+    return None
+
+
+def _scan_elf_tree(stage_dir: Path, report: DependencyReport) -> None:
+    """Walk *stage_dir*, run ldd on every ELF file, map libs to packages."""
+    for candidate in stage_dir.rglob("*"):
+        if not candidate.is_file() or not _is_elf(candidate):
+            continue
+        # Path relative to stage root is the installed path (e.g. /usr/bin/evisum)
+        try:
+            installed = "/" + str(candidate.relative_to(stage_dir))
+        except ValueError:
+            installed = str(candidate)
+
+        for lib_path in _ldd_libs(candidate):
+            pkg = _dpkg_owner(lib_path)
+            if pkg and pkg not in _ELF_SKIP_PACKAGES:
+                lib_name = Path(lib_path).name
+                reason = f"elf ldd: {installed} -> {lib_name}"
+                report.depends.add(pkg)
+                _record_reason(report, pkg, reason)

@@ -150,7 +150,11 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         rel.write_text(content, encoding="utf-8")
         generated.append(str(rel))
 
-    dep_report = infer_dependencies(repo)
+    stage_dir = orthos / "stage"
+    dep_report = infer_dependencies(
+        repo,
+        stage_dir=stage_dir if stage_dir.exists() else None,
+    )
     inferred_deps = dep_report.sorted_depends()
     dep_summary = ", ".join(inferred_deps) if inferred_deps else "(none)"
     info(f"inferred depends: {dep_summary}")
