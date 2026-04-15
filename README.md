@@ -1,8 +1,8 @@
 # Orthos Packager
 
-Orthos Packager is a deterministic Debian packaging pipeline for building `.deb` packages from source repositories with minimal assumptions.
+Orthos Packager is a deterministic Debian packaging pipeline for building .deb packages from source repositories.
 
-It is designed to take a project (currently Meson-based), analyze it, stage an install tree, and generate a working Debian package layout automatically.
+It analyzes a project (currently Meson-based), stages an install tree, and generates a Debian package layout with a focus on transparency, reproducibility, and minimal manual setup.
 
 ---
 
