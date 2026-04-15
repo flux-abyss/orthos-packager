@@ -266,7 +266,7 @@ def _log_and_install_meson_deps(names: list[str]) -> int:
     for result in report.results:
         if result.package is None:
             error(
-                f"build-dep unresolved: {result.meson_name} — {result.warning}")
+                f"build-dep unresolved: {result.meson_name} - {result.warning}")
             continue
         flag = " [installed]" if result.is_installed else ""
         bodhi_tag = " (bodhi)" if result.is_bodhi else ""

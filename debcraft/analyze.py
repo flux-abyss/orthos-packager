@@ -102,7 +102,7 @@ _FAIL_KEYWORDS = (
 
 
 def _relevant_lines(lines: list[str]) -> list[str]:
-    """Return real failure lines from the log — max 5.
+    """Return real failure lines from the log - max 5.
 
     Skips informational lines (e.g. dpkg-buildpackage: info:) that are
     not diagnostic.
@@ -160,7 +160,7 @@ def _make_summary(success: bool, category: str | None,
 def analyze(meta: dict[str, Any]) -> tuple[int, dict[str, Any], str]:
     """Read build outputs for *meta* and write analyze-result.json.
 
-    Returns (exit_code, result_dict, analyze_file_path).  Always exits 0 —
+    Returns (exit_code, result_dict, analyze_file_path).  Always exits 0 -
     analysis itself does not fail; the build result's success flag is reported,
     not re-raised.
     """

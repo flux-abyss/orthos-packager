@@ -25,15 +25,25 @@ _BIN_BUCKET = "bin"
 # Every other bucket may contain compiled binaries, so it defaults to 'any'.
 _ARCH_INDEPENDENT_BUCKETS = {"data", "doc"}
 
-# Shared-asset directory prefixes that are safe to coalesce to a
-# directory-level wildcard install entry.  Paths that do not match
-# any of these are kept at file granularity.
+# Directory prefixes under which the grouping algorithm may emit a wildcard
+# install entry, subject to the exclusivity check in _coalesce_to_dirs.
+# Paths not matching any prefix are always kept at file granularity.
 _COLLAPSIBLE_PREFIXES = (
+    # Executable install areas.
+    "usr/bin",
+    "usr/sbin",
+    "usr/libexec",
+    # Library install areas (covers multiarch triplet subdirs and app-private
+    # plugin dirs such as usr/lib/x86_64-linux-gnu/<app>/).
+    "usr/lib",
+    # Shared data install areas.
     "usr/share/applications",
     "usr/share/icons",
     "usr/share/locale",
-    "usr/share/pixmaps",
     "usr/share/man",
+    "usr/share/pixmaps",
+    # System config area.
+    "etc",
 )
 
 
@@ -47,8 +57,8 @@ def _resolve_version(meta: dict[str, Any]) -> str:
     """Return the best available upstream version string.
 
     Priority:
-    1. meta["version"] — set by the scan/probe step from meson.build
-    2. _VERSION_FALLBACK — used only when no version is discoverable
+    1. meta["version"] - set by the scan/probe step from meson.build
+    2. _VERSION_FALLBACK - used only when no version is discoverable
     """
     v = meta.get("version") or ""
     return v.strip() if v.strip() else _VERSION_FALLBACK
@@ -94,7 +104,7 @@ def _should_collapse(non_empty: list[dict[str, Any]]) -> bool:
     """Return True when all non-empty buckets can be merged into one package.
 
     Collapse when the only non-empty buckets are the executable-bearing
-    bucket and/or the data bucket — no shared libs, dev headers, plugins,
+    bucket and/or the data bucket - no shared libs, dev headers, plugins,
     doc, or other content that would justify a separate package.
     """
     names = {b["name"] for b in non_empty}
@@ -126,23 +136,10 @@ def _coalesce_to_dirs(
     app_name: str,
     all_staged: frozenset[str] | None = None,
 ) -> list[str]:
-    """Return an install manifest preferring directory-level entries.
-
-    A directory wildcard entry is only emitted when both conditions hold:
-    - the parent directory falls under a known safe shared-asset prefix, AND
-    - this package exclusively owns every file in that directory, meaning
-      every path in *all_staged* with the same parent is also in *files*.
-
-    If *all_staged* is None, *files* is treated as the complete staged tree
-    (the single-package case), and the exclusivity check passes trivially.
-    Files that do not match any safe prefix are always emitted as-is.
-    """
+    """Group install entries into directory wildcards where exclusively owned."""
     app_prefix = f"usr/share/{app_name}"
     safe_prefixes = _COLLAPSIBLE_PREFIXES + (app_prefix,)
 
-    # Build a per-directory index over the full staged tree so we can verify
-    # that collapsing a directory does not silently include files owned by a
-    # different package.
     staged_by_dir: dict[str, set[str]] = {}
     for f in (all_staged if all_staged is not None else files):
         parent = str(Path(f.lstrip("/")).parent)
@@ -153,21 +150,17 @@ def _coalesce_to_dirs(
     emitted_dirs: set[str] = set()
 
     for f in files:
-        # Inventory paths carry a leading "/"; strip it for prefix comparison.
         rel = f.lstrip("/")
         parent = str(Path(rel).parent)
 
         if parent in emitted_dirs:
-            # Directory already covered by a wildcard entry; skip.
             continue
 
         if not any(parent == p or parent.startswith(p + "/")
                    for p in safe_prefixes):
-            # Not under a safe shared-asset prefix; keep file-level entry.
             result.append(f)
             continue
 
-        # Only collapse when this package owns every file in the directory.
         if staged_by_dir.get(parent, set()).issubset(pkg_files):
             result.append("/" + parent + "/*")
             emitted_dirs.add(parent)
@@ -178,13 +171,7 @@ def _coalesce_to_dirs(
 
 
 def _pkg_arch(pkg: dict[str, Any]) -> str:
-    """Return 'all' when a package contains only arch-independent content.
-
-    A package is architecture-independent when every bucket it was built
-    from belongs to _ARCH_INDEPENDENT_BUCKETS.  Collapsed single-package
-    layouts that merge bin + data always carry compiled content and stay
-    'any'.
-    """
+    """Return 'all' for arch-independent packages, otherwise 'any'."""
     buckets: list[str] = pkg.get("buckets", [])
     if buckets and all(b in _ARCH_INDEPENDENT_BUCKETS for b in buckets):
         return "all"
@@ -208,13 +195,7 @@ def _pkg_descriptions(
     is_primary: bool,
     meta_short: str | None = None,
 ) -> tuple[str, str]:
-    """Return (short_description, long_description) for a package stanza.
-
-    For the primary (executable-bearing or collapsed) package, the short
-    description defaults to *app_name*, optionally overridden by *meta_short*.
-    For secondary packages, descriptions are derived from the bucket role.
-    The long description is always a generic template — no upstream text.
-    """
+    """Return default short and long descriptions for a package."""
     if is_primary:
         short = (meta_short.strip() if meta_short and meta_short.strip()
                  else app_name)
@@ -225,7 +206,6 @@ def _pkg_descriptions(
         short_tmpl, long_tmpl = _BUCKET_DESCRIPTIONS[bucket_name]
         return short_tmpl.format(app=app_name), long_tmpl.format(app=app_name)
 
-    # Fallback: unknown bucket.
     short = f"{app_name} {bucket_name}"
     long_ = f"{bucket_name.capitalize()} package for {app_name}."
     return short, long_
@@ -236,17 +216,7 @@ def _gen_control(
     packages: list[dict[str, Any]],
     maintainer: str,
 ) -> str:
-    """Return the full text of debian/control.
-
-    Each entry in *packages* is a dict with keys:
-      name         – binary package name
-      description  – short description line
-      buckets      – list of source bucket names (used for Architecture)
-      extra_depends – additional Depends entries (e.g. a companion package)
-
-    All binary packages default to ${shlibs:Depends}, ${misc:Depends}.
-    Packages backed exclusively by arch-independent buckets use Architecture: all.
-    """
+    """Return debian/control content for the given packages."""
     lines: list[str] = [
         f"Source: {app_name}",
         "Section: misc",
@@ -276,15 +246,18 @@ def _gen_control(
     return "\n".join(lines)
 
 
-def _gen_rules() -> str:
-    """Return the full text of debian/rules."""
-    return textwrap.dedent("""\
+def _gen_rules(rules_overrides: str = "") -> str:
+    """Return debian/rules with optional override content appended."""
+    base = textwrap.dedent("""\
         #!/usr/bin/make -f
 
         %:
         \tdh $@
     """)
-
+    overrides = rules_overrides.strip()
+    if not overrides:
+        return base
+    return base + "\n" + overrides + "\n"
 
 def _now_rfc2822() -> str:
     """Return current UTC time formatted for Debian changelog."""
@@ -315,14 +288,9 @@ def _gen_install(files: list[str]) -> str:
 
 
 def _gen_copyright(app_name: str, maintainer: str, meta: dict[str, Any]) -> str:
-    """Return a minimal DEP-5 debian/copyright baseline.
-
-    Uses available metadata where possible and honest placeholder text where
-    specific copyright or license data is not known.  No license detection
-    or header scraping is performed.
-    """
+    """Return debian/copyright content."""
     upstream_name = meta.get("project_name") or app_name
-    source_url = meta.get("source_url") or "https://example.com/FIXME"
+    source_url = meta.get("source_url") or "FIXME"
     year = datetime.now(timezone.utc).year
 
     return textwrap.dedent(f"""\
@@ -354,14 +322,7 @@ def _write_maintainer_scripts(
     meta: dict[str, Any],
     write_text_fn: Any,
 ) -> None:
-    """Write maintainer scripts that have explicit content in *meta*.
-
-    Reads meta["maintainer_scripts"] as a dict mapping script name to content.
-    Only scripts whose content is non-empty are written.  Each written script
-    is made executable (0o755).
-
-    If meta["maintainer_scripts"] is absent or empty, nothing is written.
-    """
+    """Write maintainer scripts from meta["maintainer_scripts"]."""
     scripts: dict[str, str] = meta.get("maintainer_scripts") or {}
     for name in _MAINTAINER_SCRIPTS:
         content = scripts.get(name, "").strip()
@@ -378,12 +339,7 @@ def _write_lintian_overrides(
     meta: dict[str, Any],
     write_text_fn: Any,
 ) -> None:
-    """Write per-package lintian override files when content is provided.
-
-    Reads meta["lintian_overrides"] as a dict mapping binary package name
-    to override content.  Only entries that match a generated package name
-    and have non-empty content are written.  No override rules are invented.
-    """
+    """Write lintian override files from meta["lintian_overrides"]."""
     overrides: dict[str, str] = meta.get("lintian_overrides") or {}
     pkg_names = {p["name"] for p in output_packages}
     for pkg_name, content in overrides.items():
@@ -394,6 +350,25 @@ def _write_lintian_overrides(
             continue
         write_text_fn(debian_dir / f"{pkg_name}.lintian-overrides",
                       content + "\n")
+
+
+# pylint: disable=too-many-locals
+
+def _write_debian_helpers(
+    debian_dir: Path,
+    meta: dict[str, Any],
+    write_text_fn: Any,
+) -> None:
+    """Write helper files from meta["debian_helpers"] into debian/."""
+    helpers: dict[str, str] = meta.get("debian_helpers") or {}
+    for filename, content in helpers.items():
+        content = content.strip()
+        if not content:
+            continue
+        file_path = debian_dir / filename
+        write_text_fn(file_path, content + "\n")
+        if filename.endswith(".sh"):
+            file_path.chmod(0o755)
 
 
 # pylint: disable=too-many-locals
@@ -454,7 +429,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     if collapse:
         # Single-package layout: merge all buckets into <app>.
-        # all_staged is omitted — files IS the complete tree, so the
+        # all_staged is omitted - files IS the complete tree, so the
         # exclusivity check in _coalesce_to_dirs passes trivially.
         all_files = _merged_files(non_empty)
         # Collapsed packages always carry compiled content; buckets=[] → 'any'.
@@ -509,7 +484,8 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                _gen_control(app_name, output_packages, maintainer))
 
     rules_path = debian_dir / "rules"
-    write_text(rules_path, _gen_rules())
+    rules_overrides = (meta.get("rules_overrides") or "").strip()
+    write_text(rules_path, _gen_rules(rules_overrides))
     rules_path.chmod(0o755)
 
     write_text(debian_dir / "changelog",
@@ -527,6 +503,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     _write_maintainer_scripts(debian_dir, meta, write_text)
     _write_lintian_overrides(debian_dir, output_packages, meta, write_text)
+    _write_debian_helpers(debian_dir, meta, write_text)
 
     binary_packages = [p["name"] for p in output_packages]
 

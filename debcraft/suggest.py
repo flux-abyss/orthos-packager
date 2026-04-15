@@ -50,7 +50,7 @@ def _find_install_file(orthos: Path) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Rule table — one entry per failure category.
+# Rule table - one entry per failure category.
 # Each entry is:
 #   (suggestion_type, target_file_fn, suggested_change, next_step,
 #    suggested_command, reasoning, confidence)
@@ -239,7 +239,7 @@ def _apply_rules(
     """Return a suggestion dict for *category* using the static rule table.
 
     This function is the seam point for a future AI backend: callers need not
-    change — replace or wrap this function to add model-backed suggestions.
+    change - replace or wrap this function to add model-backed suggestions.
     """
     rule = _RULES.get(category, _RULES["unknown"])
     target = rule["target_file_fn"](orthos)

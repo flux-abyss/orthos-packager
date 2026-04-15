@@ -163,7 +163,7 @@ def _apt_cache_policy(package: str) -> tuple[bool, bool]:
         return False, False
 
     lines = result.stdout.splitlines()
-    # Look for "Candidate: <something>" — if it is "(none)", package unknown.
+    # Look for "Candidate: <something>" - if it is "(none)", package unknown.
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("Candidate:"):
@@ -241,7 +241,7 @@ def resolve_build_dependency(name: str) -> ResolutionResult:
             is_bodhi=is_bodhi,
         )
 
-    # 3 + 4. apt candidate search — prefer Bodhi origin
+    # 3 + 4. apt candidate search - prefer Bodhi origin
     apt_pkg = _apt_search_dev(name)
     if apt_pkg:
         installed = _is_installed(apt_pkg)

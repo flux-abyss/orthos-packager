@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mktar.sh — create a source archive of the project
+# mktar.sh - create a source archive of the project
 #
 # Usage:
 #   bash mktar.sh                  # tracked files only (default)
@@ -92,7 +92,7 @@ with open(dst, "wb") as f:
             continue
 
         # Skip paths that no longer exist in the working tree
-        # (renamed/deleted but not yet staged — git ls-files --cached is stale)
+        # (renamed/deleted but not yet staged - git ls-files --cached is stale)
         if not os.path.lexists(path):
             skipped_missing += 1
             continue

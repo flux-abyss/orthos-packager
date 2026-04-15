@@ -249,7 +249,7 @@ def _ldd_libs(elf: Path) -> list[str]:
     paths: list[str] = []
     for line in result.stdout.splitlines():
         parts = line.split()
-        # Format: <soname> => <path> (addr)  — we want index 2
+        # Format: <soname> => <path> (addr)  - we want index 2
         if len(parts) >= 3 and parts[1] == "=>" and parts[2].startswith("/"):
             paths.append(parts[2])
     return paths
