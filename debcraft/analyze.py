@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 
 _BUILD_RESULT_FILE = "build-result.json"
@@ -51,12 +52,6 @@ _CATEGORIES: list[tuple[str, list[str]]] = [
         "dpkg-deb: error",
     ]),
 ]
-
-
-def _orthos_dir(repo_path: Path) -> Path:
-    """Mirror the layout used by all earlier steps."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
 
 
 def _load_build_result(path: Path) -> dict[str, Any]:
@@ -165,7 +160,7 @@ def analyze(meta: dict[str, Any]) -> tuple[int, dict[str, Any], str]:
     not re-raised.
     """
     repo = Path(meta["repo_path"])
-    orthos = _orthos_dir(repo)
+    orthos = orthos_dir(repo)
 
     build_result = _load_build_result(orthos / _BUILD_RESULT_FILE)
     log_lines = _load_log(orthos / _LOG_FILE)

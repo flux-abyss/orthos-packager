@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from debcraft.backends.build_backend_meson import _clean_env
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import info
 from debcraft.utils.shell import run_logged
@@ -14,12 +15,6 @@ _ARTIFACT_GLOBS = ("*.deb", "*.changes", "*.buildinfo")
 
 # Transient directories removed from the orthos workspace after a successful build.
 _TRANSIENT_DIRS = ("stage",)
-
-
-def _orthos_dir(repo_path: Path) -> Path:
-    """Return the orthos workspace directory for *repo_path*."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
 
 
 def _collect_from_parent(repo: Path) -> list[Path]:
@@ -65,7 +60,7 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     Raises FileNotFoundError if the generated debian/ skeleton is missing.
     """
     repo = Path(meta["repo_path"])
-    orthos = _orthos_dir(repo)
+    orthos = orthos_dir(repo)
 
     src_debian = orthos / "debian"
     if not src_debian.exists():

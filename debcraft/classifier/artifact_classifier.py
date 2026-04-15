@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 
 _INVENTORY_FILE = "install-inventory.json"
@@ -27,12 +28,6 @@ _KIND_TO_BUCKET: dict[str, str] = {
     "plugin": "plugins",
     "other": "other",
 }
-
-
-def _orthos_dir(repo_path: Path) -> Path:
-    """Mirror the layout used by earlier steps."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
 
 
 def _load_inventory(inventory_file: Path) -> dict[str, Any]:
@@ -76,7 +71,7 @@ def classify(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     Returns (exit_code, result_dict).
     """
     repo = Path(meta["repo_path"])
-    orthos = _orthos_dir(repo)
+    orthos = orthos_dir(repo)
     inventory_file = orthos / _INVENTORY_FILE
 
     inventory = _load_inventory(

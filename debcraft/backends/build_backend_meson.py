@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.shell import run_logged
 
@@ -34,12 +35,6 @@ def _clean_env() -> dict[str, str]:
     return env
 
 
-def _orthos_dir(repo_path: Path) -> Path:
-    """Return the scratch directory for a target repository."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
-
-
 def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
     """Run the full Meson staging flow for the repo described by *meta*.
 
@@ -52,7 +47,7 @@ def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
         A tuple of (exit_code, result_dict).
     """
     repo = Path(meta["repo_path"])
-    orthos = _orthos_dir(repo)
+    orthos = orthos_dir(repo)
 
     build_dir = orthos / "build"
     stage_dir = orthos / "stage"

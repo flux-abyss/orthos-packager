@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from debcraft.deps import infer_dependencies
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import info
 
@@ -45,12 +46,6 @@ _COLLAPSIBLE_PREFIXES = (
     # System config area.
     "etc",
 )
-
-
-def _orthos_dir(repo_path: Path) -> Path:
-    """Mirror the layout used by all earlier steps."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
 
 
 def _resolve_version(meta: dict[str, Any]) -> str:
@@ -382,7 +377,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     repo_name = repo.name
     # Debian package names use hyphens, not underscores.
     app_name = repo_name.replace("_", "-")
-    orthos = _orthos_dir(repo)
+    orthos = orthos_dir(repo)
     plan_file = orthos / _PLAN_FILE
 
     plan = _load_plan(plan_file)  # raises FileNotFoundError if missing

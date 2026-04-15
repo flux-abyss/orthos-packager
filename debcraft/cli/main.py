@@ -20,17 +20,12 @@ from debcraft.core.repo_probe import probe
 from debcraft.generator.debian_generator import generate as run_generate
 from debcraft.inventory.install_inventory import build_inventory
 from debcraft.suggest import suggest as run_suggest
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import error, info
 
 _ORTHOS_DIR = ".orthos"
 _META_FILE = "package-meta.json"
-
-
-def _orthos_dir(repo_path: Path) -> Path:
-    """Return the scratch directory for a target repository."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -108,7 +103,7 @@ def _cmd_scan(repo_path: str) -> int:
         error(str(exc))
         return 1
 
-    out_dir = _orthos_dir(Path(meta["repo_path"]))
+    out_dir = orthos_dir(Path(meta["repo_path"]))
     ensure_dir(out_dir)
     out_file = out_dir / _META_FILE
     write_json(out_file, meta)

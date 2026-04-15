@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any
 
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 
 _INVENTORY_FILE = "install-inventory.json"
@@ -75,19 +76,13 @@ def _walk_stage(stage_dir: Path) -> list[dict[str, Any]]:
     return entries
 
 
-def _orthos_dir(repo_path: Path) -> Path:
-    """Mirror the layout used by the staging backend."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
-
-
 def build_inventory(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """Walk the staged tree for *meta* and write an inventory JSON.
 
     Returns (exit_code, result_dict).
     """
     repo = Path(meta["repo_path"])
-    orthos = _orthos_dir(repo)
+    orthos = orthos_dir(repo)
     stage_dir = orthos / "stage"
 
     if not stage_dir.exists():

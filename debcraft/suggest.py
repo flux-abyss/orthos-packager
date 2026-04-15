@@ -10,16 +10,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 
 _ANALYZE_RESULT_FILE = "analyze-result.json"
 _SUGGEST_RESULT_FILE = "suggest-result.json"
-
-
-def _orthos_dir(repo_path: Path) -> Path:
-    """Mirror the layout used by all earlier steps."""
-    base = Path.cwd() / ".orthos"
-    return base / repo_path.name
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -261,7 +256,7 @@ def suggest(meta: dict[str, Any]) -> tuple[int, dict[str, Any], str]:
     Returns (exit_code, result_dict, suggest_file_path).  Always exits 0.
     """
     repo = Path(meta["repo_path"])
-    orthos = _orthos_dir(repo)
+    orthos = orthos_dir(repo)
 
     analyze = _load_analyze(orthos / _ANALYZE_RESULT_FILE)
     success: bool = bool(analyze.get("success", False))
