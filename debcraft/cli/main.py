@@ -2,7 +2,6 @@
 
 import argparse
 import sys
-import glob
 import subprocess
 from pathlib import Path
 
@@ -364,22 +363,46 @@ def _cmd_smoke(repo_path: str) -> int:
     if rc != 0:
         return rc
 
-    steps = [
+    for step in (
         _cmd_scan,
         _cmd_stage,
         _cmd_inventory,
         _cmd_classify,
         _cmd_generate,
-        _cmd_build,
-    ]
-
-    for step in steps:
+    ):
         rc = step(repo_path)
         if rc != 0:
             return rc
 
-    # Collect .deb artifacts only; ignore .buildinfo and .changes.
-    debs = sorted(d for d in glob.glob(f"{repo_path}-*.deb"))
+    try:
+        meta = probe(repo_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1
+
+    try:
+        rc, result = run_build(meta)
+    except FileNotFoundError as exc:
+        error(str(exc))
+        return 1
+
+    info(f"repo:    {result['repo_path']}")
+    info(f"debian (generated): {result['generated_debian_dir']}")
+    info(f"debian (target):    {result['target_debian_dir']}")
+    info(f"log:     {result['log_file']}")
+
+    if result["success"]:
+        info("result:  success")
+        info(f"artifacts: {len(result['artifacts'])}")
+        for p in result["artifacts"]:
+            info(f"  {p}")
+    else:
+        step = result.get("failure_step") or "unknown"
+        error(f"build failed at: {step}")
+        error(f"see log: {result['log_file']}")
+        return rc
+
+    debs = sorted(p for p in result["artifacts"] if p.endswith(".deb"))
     if not debs:
         error("no .deb artifacts found")
         return 1
@@ -387,12 +410,11 @@ def _cmd_smoke(repo_path: str) -> int:
     main_debs, dbgsym_debs = _partition_debs(debs)
 
     if main_debs:
-        info(f"main packages:  {', '.join(main_debs)}")
+        info(f"main packages:   {', '.join(main_debs)}")
     if dbgsym_debs:
         info(f"dbgsym packages: {', '.join(dbgsym_debs)}")
-    info(f"install order: main first, dbgsym last")
+    info("install order: main first, dbgsym last")
 
-    # Install main packages first so dbgsym version dependencies are satisfied.
     if main_debs:
         rc = subprocess.call(["sudo", "dpkg", "-i", *main_debs])
         if rc != 0:
