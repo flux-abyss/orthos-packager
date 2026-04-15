@@ -258,7 +258,7 @@ def _ldd_libs(elf: Path) -> list[str]:
 def _dpkg_owner(lib_path: str) -> str | None:
     """Return the Debian package owning *lib_path*, or None.
 
-    Uses ``realpath`` to resolve symlinks before querying ``dpkg -S``,
+    Uses 'realpath' to resolve symlinks before querying 'dpkg -S',
     because /lib is a symlink to /usr/lib on modern systems and dpkg's
     index stores the canonical path.
     """

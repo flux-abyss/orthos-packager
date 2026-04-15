@@ -13,20 +13,54 @@ from debcraft.utils.log import info
 _PLAN_FILE = "package-plan.json"
 _RESULT_FILE = "generate-result.json"
 
-# Buckets that warrant ${shlibs:Depends} in the control file.
-_SHLIBS_BUCKETS = {"runtime", "bin", "plugins", "other"}
-
-# Buckets that may carry inferred runtime dependencies.
-_RUNTIME_BUCKETS = {"runtime", "bin", "plugins", "other"}
-
-_MAINTAINER = "Joseph Wiley <flux.abyss@proton.me>"
+_DEFAULT_MAINTAINER = "Joseph Wiley <flux.abyss@proton.me>"
 _BUILD_DEPENDS = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
+_DEBIAN_REVISION = "1"
+_VERSION_FALLBACK = "0.1.0"
+
+# The bucket that carries the main executable.
+_BIN_BUCKET = "bin"
+
+# Buckets whose content is always architecture-independent.
+# Every other bucket may contain compiled binaries, so it defaults to 'any'.
+_ARCH_INDEPENDENT_BUCKETS = {"data", "doc"}
+
+# Shared-asset directory prefixes that are safe to coalesce to a
+# directory-level wildcard install entry.  Paths that do not match
+# any of these are kept at file granularity.
+_COLLAPSIBLE_PREFIXES = (
+    "usr/share/applications",
+    "usr/share/icons",
+    "usr/share/locale",
+    "usr/share/pixmaps",
+    "usr/share/man",
+)
 
 
 def _orthos_dir(repo_path: Path) -> Path:
     """Mirror the layout used by all earlier steps."""
     base = Path.cwd() / ".orthos"
     return base / repo_path.name
+
+
+def _resolve_version(meta: dict[str, Any]) -> str:
+    """Return the best available upstream version string.
+
+    Priority:
+    1. meta["version"] — set by the scan/probe step from meson.build
+    2. _VERSION_FALLBACK — used only when no version is discoverable
+    """
+    v = meta.get("version") or ""
+    return v.strip() if v.strip() else _VERSION_FALLBACK
+
+
+def _resolve_maintainer(meta: dict[str, Any]) -> str:
+    """Return the maintainer string to embed in generated files.
+
+    Uses meta["maintainer"] when present; falls back to _DEFAULT_MAINTAINER.
+    """
+    m = meta.get("maintainer") or ""
+    return m.strip() if m.strip() else _DEFAULT_MAINTAINER
 
 
 def _load_plan(plan_file: Path) -> dict[str, Any]:
@@ -44,42 +78,198 @@ def _non_empty_buckets(
     return [b for b in package_buckets if b["file_count"] > 0]
 
 
-def _binary_pkg_name(repo_name: str, bucket_name: str) -> str:
-    # repo directory names often use underscores; Debian prefers hyphens.
-    safe = repo_name.replace("_", "-")
-    return f"{safe}-{bucket_name}"
+def _primary_bucket_name(non_empty: list[dict[str, Any]]) -> str | None:
+    """Return the name of the primary (executable-bearing) bucket.
+
+    The bin bucket is always primary when it has content.  If there is no
+    bin bucket, the first non-empty bucket in canonical order is used.
+    """
+    for b in non_empty:
+        if b["name"] == _BIN_BUCKET:
+            return _BIN_BUCKET
+    return non_empty[0]["name"] if non_empty else None
+
+
+def _should_collapse(non_empty: list[dict[str, Any]]) -> bool:
+    """Return True when all non-empty buckets can be merged into one package.
+
+    Collapse when the only non-empty buckets are the executable-bearing
+    bucket and/or the data bucket — no shared libs, dev headers, plugins,
+    doc, or other content that would justify a separate package.
+    """
+    names = {b["name"] for b in non_empty}
+    return names <= {_BIN_BUCKET, "data"}
+
+
+def _pkg_name(app_name: str, bucket_name: str, primary: str | None) -> str:
+    """Return the Debian binary package name for *bucket_name*.
+
+    The primary bucket (executable-bearing, or the sole non-empty bucket)
+    is named after the application with no suffix.  All secondary buckets
+    receive a hyphen-separated suffix: <app>-data, <app>-dev, etc.
+    """
+    if bucket_name == primary:
+        return app_name
+    return f"{app_name}-{bucket_name}"
+
+
+def _merged_files(non_empty: list[dict[str, Any]]) -> list[str]:
+    """Return a sorted, combined file list across all non-empty buckets."""
+    all_files: list[str] = []
+    for b in non_empty:
+        all_files.extend(b["files"])
+    return sorted(all_files)
+
+
+def _coalesce_to_dirs(
+    files: list[str],
+    app_name: str,
+    all_staged: frozenset[str] | None = None,
+) -> list[str]:
+    """Return an install manifest preferring directory-level entries.
+
+    A directory wildcard entry is only emitted when both conditions hold:
+    - the parent directory falls under a known safe shared-asset prefix, AND
+    - this package exclusively owns every file in that directory, meaning
+      every path in *all_staged* with the same parent is also in *files*.
+
+    If *all_staged* is None, *files* is treated as the complete staged tree
+    (the single-package case), and the exclusivity check passes trivially.
+    Files that do not match any safe prefix are always emitted as-is.
+    """
+    app_prefix = f"usr/share/{app_name}"
+    safe_prefixes = _COLLAPSIBLE_PREFIXES + (app_prefix,)
+
+    # Build a per-directory index over the full staged tree so we can verify
+    # that collapsing a directory does not silently include files owned by a
+    # different package.
+    staged_by_dir: dict[str, set[str]] = {}
+    for f in (all_staged if all_staged is not None else files):
+        parent = str(Path(f.lstrip("/")).parent)
+        staged_by_dir.setdefault(parent, set()).add(f)
+
+    pkg_files = set(files)
+    result: list[str] = []
+    emitted_dirs: set[str] = set()
+
+    for f in files:
+        # Inventory paths carry a leading "/"; strip it for prefix comparison.
+        rel = f.lstrip("/")
+        parent = str(Path(rel).parent)
+
+        if parent in emitted_dirs:
+            # Directory already covered by a wildcard entry; skip.
+            continue
+
+        if not any(parent == p or parent.startswith(p + "/")
+                   for p in safe_prefixes):
+            # Not under a safe shared-asset prefix; keep file-level entry.
+            result.append(f)
+            continue
+
+        # Only collapse when this package owns every file in the directory.
+        if staged_by_dir.get(parent, set()).issubset(pkg_files):
+            result.append("/" + parent + "/*")
+            emitted_dirs.add(parent)
+        else:
+            result.append(f)
+
+    return result
+
+
+def _pkg_arch(pkg: dict[str, Any]) -> str:
+    """Return 'all' when a package contains only arch-independent content.
+
+    A package is architecture-independent when every bucket it was built
+    from belongs to _ARCH_INDEPENDENT_BUCKETS.  Collapsed single-package
+    layouts that merge bin + data always carry compiled content and stay
+    'any'.
+    """
+    buckets: list[str] = pkg.get("buckets", [])
+    if buckets and all(b in _ARCH_INDEPENDENT_BUCKETS for b in buckets):
+        return "all"
+    return "any"
+
+
+# Bucket-based description templates: (short, long).
+# The primary/collapsed case is handled separately.
+_BUCKET_DESCRIPTIONS: dict[str, tuple[str, str]] = {
+    "data":    ("{app} data",                 "Shared data files for {app}."),
+    "dev":     ("{app} development files",    "Development files for {app}."),
+    "doc":     ("{app} documentation",        "Documentation for {app}."),
+    "plugins": ("{app} plugins",              "Plugin files for {app}."),
+    "runtime": ("{app} runtime libraries",   "Shared libraries for {app}."),
+}
+
+
+def _pkg_descriptions(
+    app_name: str,
+    bucket_name: str,
+    is_primary: bool,
+    meta_short: str | None = None,
+) -> tuple[str, str]:
+    """Return (short_description, long_description) for a package stanza.
+
+    For the primary (executable-bearing or collapsed) package, the short
+    description defaults to *app_name*, optionally overridden by *meta_short*.
+    For secondary packages, descriptions are derived from the bucket role.
+    The long description is always a generic template — no upstream text.
+    """
+    if is_primary:
+        short = (meta_short.strip() if meta_short and meta_short.strip()
+                 else app_name)
+        long_ = f"Runtime package for {app_name}."
+        return short, long_
+
+    if bucket_name in _BUCKET_DESCRIPTIONS:
+        short_tmpl, long_tmpl = _BUCKET_DESCRIPTIONS[bucket_name]
+        return short_tmpl.format(app=app_name), long_tmpl.format(app=app_name)
+
+    # Fallback: unknown bucket.
+    short = f"{app_name} {bucket_name}"
+    long_ = f"{bucket_name.capitalize()} package for {app_name}."
+    return short, long_
 
 
 def _gen_control(
-    repo_name: str,
-    non_empty: list[dict[str, Any]],
-    inferred_deps: list[str],
+    app_name: str,
+    packages: list[dict[str, Any]],
+    maintainer: str,
 ) -> str:
-    """Return the full text of debian/control."""
-    src_name = repo_name.replace("_", "-")
+    """Return the full text of debian/control.
+
+    Each entry in *packages* is a dict with keys:
+      name         – binary package name
+      description  – short description line
+      buckets      – list of source bucket names (used for Architecture)
+      extra_depends – additional Depends entries (e.g. a companion package)
+
+    All binary packages default to ${shlibs:Depends}, ${misc:Depends}.
+    Packages backed exclusively by arch-independent buckets use Architecture: all.
+    """
     lines: list[str] = [
-        f"Source: {src_name}",
+        f"Source: {app_name}",
         "Section: misc",
         "Priority: optional",
-        f"Maintainer: {_MAINTAINER}",
+        f"Maintainer: {maintainer}",
         f"Build-Depends: {_BUILD_DEPENDS}",
         "Standards-Version: 4.6.2",
         "",
     ]
 
-    for bucket in non_empty:
-        pkg = _binary_pkg_name(repo_name, bucket["name"])
-        depends = ["${misc:Depends}"]
-        if bucket["name"] in _SHLIBS_BUCKETS:
-            depends.append("${shlibs:Depends}")
-        if bucket["name"] in _RUNTIME_BUCKETS:
-            depends.extend(inferred_deps)
+    for pkg in packages:
+        depends_parts = ["${shlibs:Depends}", "${misc:Depends}"]
+        depends_parts.extend(pkg.get("extra_depends", []))
+        arch = _pkg_arch(pkg)
+        short_desc = pkg.get("short_desc", pkg["name"])
+        long_desc = pkg.get("long_desc", f"{app_name} package.")
+
         lines += [
-            f"Package: {pkg}",
-            "Architecture: any",
-            f"Depends: {', '.join(depends)}",
-            f"Description: {src_name} {bucket['name']} files",
-            f" Auto-generated {bucket['name']} package for {src_name}.",
+            f"Package: {pkg['name']}",
+            f"Architecture: {arch}",
+            f"Depends: {', '.join(depends_parts)}",
+            f"Description: {short_desc}",
+            f" {long_desc}",
             "",
         ]
 
@@ -92,7 +282,7 @@ def _gen_rules() -> str:
         #!/usr/bin/make -f
 
         %:
-        \tdh $@ --buildsystem=meson
+        \tdh $@
     """)
 
 
@@ -101,28 +291,109 @@ def _now_rfc2822() -> str:
     return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
 
 
-def _gen_changelog(repo_name: str) -> str:
+def _gen_changelog(app_name: str, version: str, maintainer: str) -> str:
     """Return the full text of debian/changelog."""
-    src_name = repo_name.replace("_", "-")
     now = _now_rfc2822()
-
+    deb_version = f"{version}-{_DEBIAN_REVISION}"
     return textwrap.dedent(f"""\
-        {src_name} (0.1.0-1) unstable; urgency=medium
+        {app_name} ({deb_version}) unstable; urgency=medium
 
-          * Initial release.
+          * Initial packaging.
 
-         -- {_MAINTAINER}  {now}
+         -- {maintainer}  {now}
     """)
 
 
 def _gen_source_format() -> str:
     """Return the full text of debian/source/format."""
-    return "3.0 (native)\n"
+    return "3.0 (quilt)\n"
 
 
 def _gen_install(files: list[str]) -> str:
     """Return the text of a .install file: one path per line."""
     return "\n".join(files) + "\n" if files else ""
+
+
+def _gen_copyright(app_name: str, maintainer: str, meta: dict[str, Any]) -> str:
+    """Return a minimal DEP-5 debian/copyright baseline.
+
+    Uses available metadata where possible and honest placeholder text where
+    specific copyright or license data is not known.  No license detection
+    or header scraping is performed.
+    """
+    upstream_name = meta.get("project_name") or app_name
+    source_url = meta.get("source_url") or "https://example.com/FIXME"
+    year = datetime.now(timezone.utc).year
+
+    return textwrap.dedent(f"""\
+        Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+        Upstream-Name: {upstream_name}
+        Upstream-Contact: FIXME
+        Source: {source_url}
+
+        Files: *
+        Copyright: {year} FIXME <FIXME@example.com>
+        License: FIXME
+         FIXME: Replace with the actual license text or a short-form
+         reference such as GPL-2+ or MIT.  See /usr/share/common-licenses/.
+
+        Files: debian/*
+        Copyright: {year} {maintainer}
+        License: FIXME
+         FIXME: Replace with the license that applies to the packaging.
+    """)
+
+
+# Maintainer script files that may be emitted when content is explicitly
+# provided in meta["maintainer_scripts"].
+_MAINTAINER_SCRIPTS = ("postinst", "preinst", "prerm", "postrm")
+
+
+def _write_maintainer_scripts(
+    debian_dir: Path,
+    meta: dict[str, Any],
+    write_text_fn: Any,
+) -> None:
+    """Write maintainer scripts that have explicit content in *meta*.
+
+    Reads meta["maintainer_scripts"] as a dict mapping script name to content.
+    Only scripts whose content is non-empty are written.  Each written script
+    is made executable (0o755).
+
+    If meta["maintainer_scripts"] is absent or empty, nothing is written.
+    """
+    scripts: dict[str, str] = meta.get("maintainer_scripts") or {}
+    for name in _MAINTAINER_SCRIPTS:
+        content = scripts.get(name, "").strip()
+        if not content:
+            continue
+        script_path = debian_dir / name
+        write_text_fn(script_path, content + "\n")
+        script_path.chmod(0o755)
+
+
+def _write_lintian_overrides(
+    debian_dir: Path,
+    output_packages: list[dict[str, Any]],
+    meta: dict[str, Any],
+    write_text_fn: Any,
+) -> None:
+    """Write per-package lintian override files when content is provided.
+
+    Reads meta["lintian_overrides"] as a dict mapping binary package name
+    to override content.  Only entries that match a generated package name
+    and have non-empty content are written.  No override rules are invented.
+    """
+    overrides: dict[str, str] = meta.get("lintian_overrides") or {}
+    pkg_names = {p["name"] for p in output_packages}
+    for pkg_name, content in overrides.items():
+        if pkg_name not in pkg_names:
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        write_text_fn(debian_dir / f"{pkg_name}.lintian-overrides",
+                      content + "\n")
 
 
 # pylint: disable=too-many-locals
@@ -132,6 +403,8 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """
     repo = Path(meta["repo_path"])
     repo_name = repo.name
+    # Debian package names use hyphens, not underscores.
+    app_name = repo_name.replace("_", "-")
     orthos = _orthos_dir(repo)
     plan_file = orthos / _PLAN_FILE
 
@@ -150,6 +423,14 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         rel.write_text(content, encoding="utf-8")
         generated.append(str(rel))
 
+    version = _resolve_version(meta)
+    maintainer = _resolve_maintainer(meta)
+    info(f"version:    {version}")
+    info(f"maintainer: {maintainer}")
+
+    # Dependency inference is kept for log output, but is not injected
+    # into generated control stanzas.  ${shlibs:Depends} at build time
+    # is more accurate for ELF-bearing packages.
     stage_dir = orthos / "stage"
     dep_report = infer_dependencies(
         repo,
@@ -161,25 +442,93 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     for pkg, pkg_reasons in dep_report.sorted_reasons():
         info(f"  inferred reason: {pkg} <- {'; '.join(pkg_reasons)}")
 
+    primary = _primary_bucket_name(non_empty)
+    collapse = _should_collapse(non_empty)
+
+    # -- Build the package descriptor list and install manifests ----------
+
+    # output_packages: ordered list of dicts passed to _gen_control
+    output_packages: list[dict[str, Any]] = []
+    # install_manifests: pkg_name -> coalesced file list
+    install_manifests: dict[str, list[str]] = {}
+
+    if collapse:
+        # Single-package layout: merge all buckets into <app>.
+        # all_staged is omitted — files IS the complete tree, so the
+        # exclusivity check in _coalesce_to_dirs passes trivially.
+        all_files = _merged_files(non_empty)
+        # Collapsed packages always carry compiled content; buckets=[] → 'any'.
+        short_desc, long_desc = _pkg_descriptions(
+            app_name, "", is_primary=True,
+            meta_short=meta.get("description"))
+        output_packages.append({
+            "name": app_name,
+            "short_desc": short_desc,
+            "long_desc": long_desc,
+            "buckets": [],
+            "extra_depends": [],
+        })
+        install_manifests[app_name] = _coalesce_to_dirs(all_files, app_name)
+
+    else:
+        # Multi-package layout: primary gets <app>, secondaries get suffixes.
+        # If a data companion package exists, wire it into the primary Depends.
+        data_companion: str | None = None
+        for bucket in non_empty:
+            if bucket["name"] == "data" and bucket["name"] != primary:
+                data_companion = _pkg_name(app_name, "data", primary)
+
+        # Build the complete staged file set once so _coalesce_to_dirs can
+        # verify that a collapsed directory is not shared across packages.
+        all_staged: frozenset[str] = frozenset(
+            f for b in non_empty for f in b["files"])
+
+        for bucket in non_empty:
+            bname = bucket["name"]
+            pname = _pkg_name(app_name, bname, primary)
+            is_primary = (bname == primary)
+            extra: list[str] = []
+            if is_primary and data_companion:
+                extra.append(data_companion)
+            short_desc, long_desc = _pkg_descriptions(
+                app_name, bname, is_primary=is_primary,
+                meta_short=meta.get("description") if is_primary else None)
+            output_packages.append({
+                "name": pname,
+                "short_desc": short_desc,
+                "long_desc": long_desc,
+                "buckets": [bname],
+                "extra_depends": extra,
+            })
+            install_manifests[pname] = _coalesce_to_dirs(
+                bucket["files"], app_name, all_staged)
+
+    # -- Write debian/ files ----------------------------------------------
+
     write_text(debian_dir / "control",
-               _gen_control(repo_name, non_empty, inferred_deps))
+               _gen_control(app_name, output_packages, maintainer))
 
     rules_path = debian_dir / "rules"
     write_text(rules_path, _gen_rules())
     rules_path.chmod(0o755)
 
-    write_text(debian_dir / "changelog", _gen_changelog(repo_name))
+    write_text(debian_dir / "changelog",
+               _gen_changelog(app_name, version, maintainer))
     write_text(source_dir / "format", _gen_source_format())
 
-    # One .install file per non-empty bucket.
-    for bucket in non_empty:
-        pkg_name = _binary_pkg_name(repo_name, bucket["name"])
-        install_name = f"{pkg_name}.install"
-        write_text(debian_dir / install_name, _gen_install(bucket["files"]))
+    # One .install file per output package.
+    for pkg_info in output_packages:
+        pname = pkg_info["name"]
+        write_text(debian_dir / f"{pname}.install",
+                   _gen_install(install_manifests[pname]))
 
-    binary_packages = [
-        _binary_pkg_name(repo_name, b["name"]) for b in non_empty
-    ]
+    write_text(debian_dir / "copyright",
+               _gen_copyright(app_name, maintainer, meta))
+
+    _write_maintainer_scripts(debian_dir, meta, write_text)
+    _write_lintian_overrides(debian_dir, output_packages, meta, write_text)
+
+    binary_packages = [p["name"] for p in output_packages]
 
     result: dict[str, Any] = {
         "binary_packages": binary_packages,
