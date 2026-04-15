@@ -13,7 +13,7 @@ from debcraft.utils.log import info
 _PLAN_FILE = "package-plan.json"
 _RESULT_FILE = "generate-result.json"
 
-_DEFAULT_MAINTAINER = "Joseph Wiley <flux.abyss@proton.me>"
+_DEFAULT_MAINTAINER = "FIXME <fixme@example.com>"
 _BUILD_DEPENDS = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
 _DEBIAN_REVISION = "1"
 _VERSION_FALLBACK = "0.1.0"
@@ -162,7 +162,7 @@ def _coalesce_to_dirs(
             continue
 
         if staged_by_dir.get(parent, set()).issubset(pkg_files):
-            result.append("/" + parent + "/*")
+            result.append(parent + "/*")
             emitted_dirs.add(parent)
         else:
             result.append(f)
@@ -492,11 +492,13 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                _gen_changelog(app_name, version, maintainer))
     write_text(source_dir / "format", _gen_source_format())
 
-    # One .install file per output package.
-    for pkg_info in output_packages:
-        pname = pkg_info["name"]
-        write_text(debian_dir / f"{pname}.install",
-                   _gen_install(install_manifests[pname]))
+    # Emit .install files only when multiple packages are generated.
+    # Single-package builds rely on dh_auto_install directly.
+    if not collapse:
+        for pkg_info in output_packages:
+            pname = pkg_info["name"]
+            write_text(debian_dir / f"{pname}.install",
+                    _gen_install(install_manifests[pname]))
 
     write_text(debian_dir / "copyright",
                _gen_copyright(app_name, maintainer, meta))

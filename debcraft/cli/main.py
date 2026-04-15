@@ -351,9 +351,15 @@ def _resolve_and_install_build_deps(repo_path: str) -> int:
     return _run_pkgconfig_closure(names)
 
 
+def _partition_debs(debs: list[str]) -> tuple[list[str], list[str]]:
+    """Return (main_debs, dbgsym_debs) partitioned from *debs*."""
+    main = [d for d in debs if "-dbgsym_" not in d]
+    dbgsym = [d for d in debs if "-dbgsym_" in d]
+    return main, dbgsym
+
+
 def _cmd_smoke(repo_path: str) -> int:
     """Build, install, and resolve dependencies for a repository."""
-    # Resolve + install build dependencies before the pipeline runs.
     rc = _resolve_and_install_build_deps(repo_path)
     if rc != 0:
         return rc
@@ -367,29 +373,43 @@ def _cmd_smoke(repo_path: str) -> int:
         _cmd_build,
     ]
 
-    # run full pipeline
     for step in steps:
         rc = step(repo_path)
         if rc != 0:
             return rc
 
-    # install artifacts
-    debs = sorted(glob.glob(f"{repo_path}-*.deb"))
+    # Collect .deb artifacts only; ignore .buildinfo and .changes.
+    debs = sorted(d for d in glob.glob(f"{repo_path}-*.deb"))
     if not debs:
         error("no .deb artifacts found")
         return 1
 
-    info(f"installing: {', '.join(debs)}")
+    main_debs, dbgsym_debs = _partition_debs(debs)
 
-    rc = subprocess.call(["sudo", "dpkg", "-i", *debs])
-    if rc != 0:
-        info("dpkg reported issues, attempting to fix dependencies...")
+    if main_debs:
+        info(f"main packages:  {', '.join(main_debs)}")
+    if dbgsym_debs:
+        info(f"dbgsym packages: {', '.join(dbgsym_debs)}")
+    info(f"install order: main first, dbgsym last")
 
-    # resolve dependencies
-    rc = subprocess.call(["sudo", "apt", "-f", "install", "-y"])
-    if rc != 0:
-        error("apt failed to resolve dependencies")
-        return rc
+    # Install main packages first so dbgsym version dependencies are satisfied.
+    if main_debs:
+        rc = subprocess.call(["sudo", "dpkg", "-i", *main_debs])
+        if rc != 0:
+            info("dpkg reported issues on main packages, running apt -f install...")
+            rc = subprocess.call(["sudo", "apt", "-f", "install", "-y"])
+            if rc != 0:
+                error("apt failed to resolve dependencies for main packages")
+                return rc
+
+    if dbgsym_debs:
+        rc = subprocess.call(["sudo", "dpkg", "-i", *dbgsym_debs])
+        if rc != 0:
+            info("dpkg reported issues on dbgsym packages, running apt -f install...")
+            rc = subprocess.call(["sudo", "apt", "-f", "install", "-y"])
+            if rc != 0:
+                error("apt failed to resolve dependencies for dbgsym packages")
+                return rc
 
     info("smoke test complete ✔")
     return 0
