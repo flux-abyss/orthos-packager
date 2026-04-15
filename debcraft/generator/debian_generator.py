@@ -181,11 +181,11 @@ def _pkg_arch(pkg: dict[str, Any]) -> str:
 # Bucket-based description templates: (short, long).
 # The primary/collapsed case is handled separately.
 _BUCKET_DESCRIPTIONS: dict[str, tuple[str, str]] = {
-    "data":    ("{app} data",                 "Shared data files for {app}."),
-    "dev":     ("{app} development files",    "Development files for {app}."),
-    "doc":     ("{app} documentation",        "Documentation for {app}."),
-    "plugins": ("{app} plugins",              "Plugin files for {app}."),
-    "runtime": ("{app} runtime libraries",   "Shared libraries for {app}."),
+    "data": ("{app} data", "Shared data files for {app}."),
+    "dev": ("{app} development files", "Development files for {app}."),
+    "doc": ("{app} documentation", "Documentation for {app}."),
+    "plugins": ("{app} plugins", "Plugin files for {app}."),
+    "runtime": ("{app} runtime libraries", "Shared libraries for {app}."),
 }
 
 
@@ -197,8 +197,8 @@ def _pkg_descriptions(
 ) -> tuple[str, str]:
     """Return default short and long descriptions for a package."""
     if is_primary:
-        short = (meta_short.strip() if meta_short and meta_short.strip()
-                 else app_name)
+        short = (meta_short.strip()
+                 if meta_short and meta_short.strip() else app_name)
         long_ = f"Runtime package for {app_name}."
         return short, long_
 
@@ -258,6 +258,7 @@ def _gen_rules(rules_overrides: str = "") -> str:
     if not overrides:
         return base
     return base + "\n" + overrides + "\n"
+
 
 def _now_rfc2822() -> str:
     """Return current UTC time formatted for Debian changelog."""
@@ -354,6 +355,7 @@ def _write_lintian_overrides(
 
 # pylint: disable=too-many-locals
 
+
 def _write_debian_helpers(
     debian_dir: Path,
     meta: dict[str, Any],
@@ -371,7 +373,7 @@ def _write_debian_helpers(
             file_path.chmod(0o755)
 
 
-# pylint: disable=too-many-locals
+# pylint: disable=too-many-locals,too-many-statements
 def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """Generate a debian/ skeleton from the package plan for *meta*.
     Returns (exit_code, result_dict).
@@ -434,8 +436,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         all_files = _merged_files(non_empty)
         # Collapsed packages always carry compiled content; buckets=[] → 'any'.
         short_desc, long_desc = _pkg_descriptions(
-            app_name, "", is_primary=True,
-            meta_short=meta.get("description"))
+            app_name, "", is_primary=True, meta_short=meta.get("description"))
         output_packages.append({
             "name": app_name,
             "short_desc": short_desc,
@@ -461,12 +462,14 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         for bucket in non_empty:
             bname = bucket["name"]
             pname = _pkg_name(app_name, bname, primary)
-            is_primary = (bname == primary)
+            is_primary = bname == primary
             extra: list[str] = []
             if is_primary and data_companion:
                 extra.append(data_companion)
             short_desc, long_desc = _pkg_descriptions(
-                app_name, bname, is_primary=is_primary,
+                app_name,
+                bname,
+                is_primary=is_primary,
                 meta_short=meta.get("description") if is_primary else None)
             output_packages.append({
                 "name": pname,
@@ -484,7 +487,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                _gen_control(app_name, output_packages, maintainer))
 
     rules_path = debian_dir / "rules"
-    rules_overrides = (meta.get("rules_overrides") or "").strip()
+    rules_overrides = meta.get("rules_overrides", "").strip()
     write_text(rules_path, _gen_rules(rules_overrides))
     rules_path.chmod(0o755)
 
@@ -498,7 +501,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         for pkg_info in output_packages:
             pname = pkg_info["name"]
             write_text(debian_dir / f"{pname}.install",
-                    _gen_install(install_manifests[pname]))
+                       _gen_install(install_manifests[pname]))
 
     write_text(debian_dir / "copyright",
                _gen_copyright(app_name, maintainer, meta))

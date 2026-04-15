@@ -252,8 +252,8 @@ def _cmd_build(repo_path: str) -> int:
         for p in result["artifacts"]:
             info(f"  {p}")
     else:
-        step = result.get("failure_step") or "unknown"
-        error(f"build failed at: {step}")
+        failure_step = result.get("failure_step") or "unknown"
+        error(f"build failed at: {failure_step}")
         error(f"see log: {result['log_file']}")
 
     return rc
@@ -352,11 +352,12 @@ def _resolve_and_install_build_deps(repo_path: str) -> int:
 
 def _partition_debs(debs: list[str]) -> tuple[list[str], list[str]]:
     """Return (main_debs, dbgsym_debs) partitioned from *debs*."""
-    main = [d for d in debs if "-dbgsym_" not in d]
-    dbgsym = [d for d in debs if "-dbgsym_" in d]
-    return main, dbgsym
+    main_debs = [d for d in debs if "-dbgsym_" not in d]
+    dbgsym_debs = [d for d in debs if "-dbgsym_" in d]
+    return main_debs, dbgsym_debs
 
 
+# pylint: disable=too-many-return-statements,too-many-branches
 def _cmd_smoke(repo_path: str) -> int:
     """Build, install, and resolve dependencies for a repository."""
     rc = _resolve_and_install_build_deps(repo_path)
@@ -364,11 +365,11 @@ def _cmd_smoke(repo_path: str) -> int:
         return rc
 
     for step in (
-        _cmd_scan,
-        _cmd_stage,
-        _cmd_inventory,
-        _cmd_classify,
-        _cmd_generate,
+            _cmd_scan,
+            _cmd_stage,
+            _cmd_inventory,
+            _cmd_classify,
+            _cmd_generate,
     ):
         rc = step(repo_path)
         if rc != 0:
@@ -397,8 +398,8 @@ def _cmd_smoke(repo_path: str) -> int:
         for p in result["artifacts"]:
             info(f"  {p}")
     else:
-        step = result.get("failure_step") or "unknown"
-        error(f"build failed at: {step}")
+        failure_step = result.get("failure_step") or "unknown"
+        error(f"build failed at: {failure_step}")
         error(f"see log: {result['log_file']}")
         return rc
 
@@ -418,7 +419,9 @@ def _cmd_smoke(repo_path: str) -> int:
     if main_debs:
         rc = subprocess.call(["sudo", "dpkg", "-i", *main_debs])
         if rc != 0:
-            info("dpkg reported issues on main packages, running apt -f install...")
+            info(
+                "dpkg reported issues on main packages, running apt -f install..."
+            )
             rc = subprocess.call(["sudo", "apt", "-f", "install", "-y"])
             if rc != 0:
                 error("apt failed to resolve dependencies for main packages")
@@ -427,7 +430,9 @@ def _cmd_smoke(repo_path: str) -> int:
     if dbgsym_debs:
         rc = subprocess.call(["sudo", "dpkg", "-i", *dbgsym_debs])
         if rc != 0:
-            info("dpkg reported issues on dbgsym packages, running apt -f install...")
+            info(
+                "dpkg reported issues on dbgsym packages, running apt -f install..."
+            )
             rc = subprocess.call(["sudo", "apt", "-f", "install", "-y"])
             if rc != 0:
                 error("apt failed to resolve dependencies for dbgsym packages")
@@ -519,32 +524,24 @@ def main() -> None:
         parser.print_help(sys.stderr)
         sys.exit(1)
 
-    if args.command == "scan":
-        sys.exit(_cmd_scan(args.repo_path))
+    handlers = {
+        "scan": _cmd_scan,
+        "stage": _cmd_stage,
+        "inventory": _cmd_inventory,
+        "classify": _cmd_classify,
+        "generate": _cmd_generate,
+        "build": _cmd_build,
+        "analyze": _cmd_analyze,
+        "suggest": _cmd_suggest,
+        "smoke": _cmd_smoke,
+    }
 
-    if args.command == "stage":
-        sys.exit(_cmd_stage(args.repo_path))
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
 
-    if args.command == "inventory":
-        sys.exit(_cmd_inventory(args.repo_path))
-
-    if args.command == "classify":
-        sys.exit(_cmd_classify(args.repo_path))
-
-    if args.command == "generate":
-        sys.exit(_cmd_generate(args.repo_path))
-
-    if args.command == "build":
-        sys.exit(_cmd_build(args.repo_path))
-
-    if args.command == "analyze":
-        sys.exit(_cmd_analyze(args.repo_path))
-
-    if args.command == "suggest":
-        sys.exit(_cmd_suggest(args.repo_path))
-
-    if args.command == "smoke":
-        sys.exit(_cmd_smoke(args.repo_path))
+    sys.exit(handler(args.repo_path))
 
 
 if __name__ == "__main__":
