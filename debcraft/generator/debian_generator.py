@@ -49,9 +49,10 @@ _COLLAPSIBLE_PREFIXES = (
 def _resolve_version(meta: dict[str, Any]) -> str:
     """Return the best available upstream version string.
 
-    Priority:
-    1. meta["version"] - set by the scan/probe step from meson.build
-    2. _VERSION_FALLBACK - used only when no version is discoverable
+    Priority (set by repo_probe.py, recorded in meta["version_source"]):
+    1. meta["version"]  - parsed from meson.build project() call
+    2. git tag          - nearest ancestor tag, 'v' prefix stripped
+    3. _VERSION_FALLBACK - used only when neither source is available
     """
     v = meta.get("version") or ""
     return v.strip() if v.strip() else _VERSION_FALLBACK
@@ -186,7 +187,7 @@ def _gen_build_depends(repo: Path) -> tuple[str, str]:
     # Merge base + extras, deduplicated, in stable order.
     base_parts = [p.strip() for p in _BUILD_DEPENDS_BASE.split(",")]
     all_parts = base_parts + [p for p in extra if p not in base_parts]
-    return ", ".join(all_parts), "meson+bodhi-map"
+    return ", ".join(all_parts), "meson+map"
 
 
 # Provenance labels that indicate dh_shlibdeps handles the dep better than
@@ -331,6 +332,10 @@ def _build_package_layout(
         if is_primary and data_companion:
             extra.append(data_companion)
         if bname == "dev" and runtime_pkg:
+            extra.append(runtime_pkg)
+        # plugins package also depends on the runtime package: plugins are
+        # useless without the shared libraries they extend.
+        if bname == "plugins" and runtime_pkg:
             extra.append(runtime_pkg)
         if is_primary:
             for dep in non_elf_deps:
