@@ -4,8 +4,10 @@ import argparse
 import sys
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from debcraft.analyze import analyze as run_analyze
+from debcraft.apply_debian import apply as run_apply
 from debcraft.backends.build_backend_debian import build as run_build
 from debcraft.backends.build_backend_meson import stage as meson_stage
 from debcraft.build_deps import (
@@ -24,7 +26,6 @@ from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import error, info
 
-_ORTHOS_DIR = ".orthos"
 _META_FILE = "package-meta.json"
 
 
@@ -64,8 +65,17 @@ def _build_parser() -> argparse.ArgumentParser:
                           metavar="PATH",
                           help="Local path to the repository.")
 
-    build_p = sub.add_parser(
-        "build", help="Build Debian packages from the generated skeleton.")
+    apply_p = sub.add_parser(
+        "apply", help="Materialize generated debian/ into the source repo.")
+    apply_p.add_argument("repo_path",
+                         metavar="PATH",
+                         help="Local path to the repository.")
+    apply_p.add_argument("--force",
+                         action="store_true",
+                         help="Overwrite existing repo/debian if present.")
+
+    build_p = sub.add_parser("build",
+                             help="Build Debian packages using repo/debian.")
     build_p.add_argument("repo_path",
                          metavar="PATH",
                          help="Local path to the repository.")
@@ -222,8 +232,34 @@ def _cmd_generate(repo_path: str) -> int:
     return rc
 
 
+def _cmd_apply(repo_path: str, force: bool = False) -> int:
+    """Materialize generated debian/ from the orthos workspace into the repo."""
+    try:
+        meta = probe(repo_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1
+
+    try:
+        _rc, result = run_apply(meta, force=force)
+    except FileNotFoundError as exc:
+        error(str(exc))
+        return 1
+    except FileExistsError as exc:
+        error(str(exc))
+        return 1
+
+    info(f"repo:    {result['repo_path']}")
+    info(f"source:  {result['source_debian_dir']}")
+    info(f"target:  {result['target_debian_dir']}")
+    if result["overwritten"]:
+        info("overwritten: yes")
+    info("result:  applied")
+    return 0
+
+
 def _cmd_build(repo_path: str) -> int:
-    """Copy generated debian/ into the repo and run dpkg-buildpackage."""
+    """Run dpkg-buildpackage using repo/debian."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
@@ -237,8 +273,7 @@ def _cmd_build(repo_path: str) -> int:
         return 1
 
     info(f"repo:    {result['repo_path']}")
-    info(f"debian (generated): {result['generated_debian_dir']}")
-    info(f"debian (target):    {result['target_debian_dir']}")
+    info(f"debian:  {result['target_debian_dir']}")
     info(f"log:     {result['log_file']}")
 
     if result["success"]:
@@ -352,13 +387,8 @@ def _partition_debs(debs: list[str]) -> tuple[list[str], list[str]]:
     return main_debs, dbgsym_debs
 
 
-# pylint: disable=too-many-return-statements,too-many-branches
-def _cmd_smoke(repo_path: str) -> int:
-    """Build, install, and resolve dependencies for a repository."""
-    rc = _resolve_and_install_build_deps(repo_path)
-    if rc != 0:
-        return rc
-
+def _run_prebuild_pipeline(repo_path: str) -> int:
+    """Run scan→generate pipeline and auto-apply debian/ if the repo lacks one."""
     for step in (
             _cmd_scan,
             _cmd_stage,
@@ -370,21 +400,31 @@ def _cmd_smoke(repo_path: str) -> int:
         if rc != 0:
             return rc
 
+    repo = Path(repo_path)
+    if not (repo / "debian").exists():
+        info("smoke: repo/debian absent – auto-applying generated debian/")
+        return _cmd_apply(repo_path, force=False)
+
+    info("smoke: repo/debian present – skipping auto-apply")
+    return 0
+
+
+def _run_build_step(repo_path: str) -> tuple[int, dict[str, Any] | None]:
+    """Probe, build, and log the build outcome. Returns (rc, result or None)."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         error(str(exc))
-        return 1
+        return 1, None
 
     try:
         rc, result = run_build(meta)
     except FileNotFoundError as exc:
         error(str(exc))
-        return 1
+        return 1, None
 
     info(f"repo:    {result['repo_path']}")
-    info(f"debian (generated): {result['generated_debian_dir']}")
-    info(f"debian (target):    {result['target_debian_dir']}")
+    info(f"debian:  {result['target_debian_dir']}")
     info(f"log:     {result['log_file']}")
 
     if result["success"]:
@@ -396,13 +436,12 @@ def _cmd_smoke(repo_path: str) -> int:
         failure_step = result.get("failure_step") or "unknown"
         error(f"build failed at: {failure_step}")
         error(f"see log: {result['log_file']}")
-        return rc
 
-    debs = sorted(p for p in result["artifacts"] if p.endswith(".deb"))
-    if not debs:
-        error("no .deb artifacts found")
-        return 1
+    return rc, result
 
+
+def _install_built_debs(debs: list[str]) -> int:
+    """Install partitioned .deb artifacts via dpkg with apt -f fallback."""
     main_debs, dbgsym_debs = _partition_debs(debs)
 
     if main_debs:
@@ -432,6 +471,33 @@ def _cmd_smoke(repo_path: str) -> int:
             if rc != 0:
                 error("apt failed to resolve dependencies for dbgsym packages")
                 return rc
+
+    return 0
+
+
+# pylint: disable=too-many-return-statements
+def _cmd_smoke(repo_path: str) -> int:
+    """Run the full pipeline, install packages, and resolve dependencies."""
+    rc = _resolve_and_install_build_deps(repo_path)
+    if rc != 0:
+        return rc
+
+    rc = _run_prebuild_pipeline(repo_path)
+    if rc != 0:
+        return rc
+
+    rc, result = _run_build_step(repo_path)
+    if result is None or not result["success"]:
+        return rc
+
+    debs = sorted(p for p in result["artifacts"] if p.endswith(".deb"))
+    if not debs:
+        error("no .deb artifacts found")
+        return 1
+
+    rc = _install_built_debs(debs)
+    if rc != 0:
+        return rc
 
     info("smoke test complete ✔")
     return 0
@@ -525,6 +591,7 @@ def main() -> None:
         "inventory": _cmd_inventory,
         "classify": _cmd_classify,
         "generate": _cmd_generate,
+        "apply": lambda p: _cmd_apply(p, force=getattr(args, "force", False)),
         "build": _cmd_build,
         "analyze": _cmd_analyze,
         "suggest": _cmd_suggest,

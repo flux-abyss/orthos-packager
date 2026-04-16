@@ -39,6 +39,9 @@ class DependencyReport:
     gi_namespaces: set[str] = field(default_factory=set)
     cli_commands: set[str] = field(default_factory=set)
     reasons: dict[str, list[str]] = field(default_factory=dict)
+    # provenance[pkg] = source label: "python-import", "gi-namespace",
+    # "subprocess", "elf-ldd", or "fallback".
+    provenance: dict[str, str] = field(default_factory=dict)
 
     def sorted_depends(self) -> list[str]:
         """Return inferred dependencies in sorted order."""
@@ -73,12 +76,18 @@ def infer_dependencies(
     return report
 
 
-def _record_reason(report: DependencyReport, pkg: str, reason: str) -> None:
+def _record_reason(report: DependencyReport,
+                   pkg: str,
+                   reason: str,
+                   provenance: str = "inferred") -> None:
     """Append *reason* to the reasons list for *pkg*, avoiding duplicates."""
     if pkg not in report.reasons:
         report.reasons[pkg] = []
     if reason not in report.reasons[pkg]:
         report.reasons[pkg].append(reason)
+    # First provenance label wins.
+    if pkg not in report.provenance:
+        report.provenance[pkg] = provenance
 
 
 # pylint: disable=too-many-branches
@@ -102,7 +111,10 @@ def _scan_python_file(path: Path, report: DependencyReport) -> None:
                 pkg = PYTHON_IMPORT_MAP.get(top)
                 if pkg:
                     report.depends.add(pkg)
-                    _record_reason(report, pkg, f"import {top}")
+                    _record_reason(report,
+                                   pkg,
+                                   f"import {top}",
+                                   provenance="python-import")
 
         elif isinstance(node, ast.ImportFrom):
             if node.module:
@@ -111,7 +123,10 @@ def _scan_python_file(path: Path, report: DependencyReport) -> None:
                 pkg = PYTHON_IMPORT_MAP.get(top)
                 if pkg:
                     report.depends.add(pkg)
-                    _record_reason(report, pkg, f"import {top}")
+                    _record_reason(report,
+                                   pkg,
+                                   f"import {top}",
+                                   provenance="python-import")
 
         elif _is_gi_require_version_call(node):
             call = cast(ast.Call, node)
@@ -121,7 +136,10 @@ def _scan_python_file(path: Path, report: DependencyReport) -> None:
                 reason = _gi_reason(call, namespace)
                 for pkg in GI_NAMESPACE_MAP.get(namespace, []):
                     report.depends.add(pkg)
-                    _record_reason(report, pkg, reason)
+                    _record_reason(report,
+                                   pkg,
+                                   reason,
+                                   provenance="gi-namespace")
 
         elif _is_subprocess_command(node):
             call = cast(ast.Call, node)
@@ -131,7 +149,10 @@ def _scan_python_file(path: Path, report: DependencyReport) -> None:
                 pkg = CLI_COMMAND_MAP.get(command)
                 if pkg:
                     report.depends.add(pkg)
-                    _record_reason(report, pkg, f"subprocess {command}")
+                    _record_reason(report,
+                                   pkg,
+                                   f"subprocess {command}",
+                                   provenance="subprocess")
 
 
 def _is_gi_require_version_call(node: ast.AST) -> bool:
@@ -212,11 +233,21 @@ def _extract_command_name(node: ast.Call) -> str | None:
 
 _ELF_MAGIC = b"\x7fELF"
 
-# Libraries whose owning package is noise for runtime Depends:
-#   linux-vdso is a kernel artefact, not a real package.
-#   libc6 / libm are pulled in transitively by almost everything and cause
-#   excessive pin-downs, so we skip them for this first pass.
-_ELF_SKIP_PACKAGES = {"libc6", "libm6"}
+# Packages whose runtime presence is guaranteed by the build toolchain or
+# libc/kernel interface and should not appear in explicit Depends.
+# - libc6, libm: pulled transitively by almost every ELF binary
+# - linux-vdso: kernel artefact, not a real package
+# - libgcc-s1, libstdc++6: base compiler runtime, always present
+# - libdl, libpthread, librt: merged into glibc on modern systems
+_ELF_SKIP_PACKAGES = {
+    "libc6",
+    "libm6",
+    "libgcc-s1",
+    "libstdc++6",
+    "libdl",
+    "libpthread",
+    "librt",
+}
 
 
 def _is_elf(path: Path) -> bool:
@@ -282,11 +313,14 @@ def _dpkg_owner(lib_path: str) -> str | None:
 
 
 def _scan_elf_tree(stage_dir: Path, report: DependencyReport) -> None:
-    """Walk *stage_dir*, run ldd on every ELF file, map libs to packages."""
+    """Walk *stage_dir*, run ldd on every ELF file, map libs to packages.
+
+    Packages already recorded for any other ELF in this tree are not
+    re-added; reasons accumulate but the depends set stays deduplicated.
+    """
     for candidate in stage_dir.rglob("*"):
         if not candidate.is_file() or not _is_elf(candidate):
             continue
-        # Path relative to stage root is the installed path (e.g. /usr/bin/evisum)
         try:
             installed = "/" + str(candidate.relative_to(stage_dir))
         except ValueError:
@@ -294,8 +328,9 @@ def _scan_elf_tree(stage_dir: Path, report: DependencyReport) -> None:
 
         for lib_path in _ldd_libs(candidate):
             pkg = _dpkg_owner(lib_path)
-            if pkg and pkg not in _ELF_SKIP_PACKAGES:
-                lib_name = Path(lib_path).name
-                reason = f"elf ldd: {installed} -> {lib_name}"
-                report.depends.add(pkg)
-                _record_reason(report, pkg, reason)
+            if not pkg or pkg in _ELF_SKIP_PACKAGES:
+                continue
+            lib_name = Path(lib_path).name
+            reason = f"elf ldd: {installed} -> {lib_name}"
+            report.depends.add(pkg)
+            _record_reason(report, pkg, reason, provenance="elf-ldd")

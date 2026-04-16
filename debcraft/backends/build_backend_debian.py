@@ -1,10 +1,11 @@
-"""Debian package build backend: copy generated debian/, run dpkg-buildpackage."""
+"""Debian package build backend: build from repo debian/ and retain artifacts."""
 
 import shutil
 from pathlib import Path
 from typing import Any
 
 from debcraft.backends.build_backend_meson import _clean_env
+from debcraft.debian_clean import clean_debian_tree
 from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import info
@@ -42,42 +43,30 @@ def _retain_artifacts(repo: Path, orthos: Path) -> list[str]:
     return sorted(retained)
 
 
-def _cleanup_transient(orthos: Path, dest_debian: Path) -> None:
+def _cleanup_transient(orthos: Path) -> None:
     """Remove transient workspace directories after a successful build."""
     for name in _TRANSIENT_DIRS:
         target = orthos / name
         if target.exists():
             shutil.rmtree(target)
 
-    if dest_debian.exists():
-        shutil.rmtree(dest_debian)
-
 
 def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    """Copy generated debian/ into the repo, run dpkg-buildpackage, and  artifacts.
-
-    Returns (exit_code, result_dict).
-    Raises FileNotFoundError if the generated debian/ skeleton is missing.
-    """
+    """Run dpkg-buildpackage using debian/ from the source repo."""
     repo = Path(meta["repo_path"])
     orthos = orthos_dir(repo)
 
-    src_debian = orthos / "debian"
-    if not src_debian.exists():
-        raise FileNotFoundError(f"generated debian/ not found: {src_debian}\n"
-                                f"Run 'orthos-packager generate {repo}' first.")
+    dest_debian = repo / "debian"
+    if not dest_debian.exists():
+        raise FileNotFoundError(f"repo debian/ not found: {dest_debian}\n"
+                                f"Run 'orthos-packager apply {repo}' first.")
 
     logs_dir = orthos / "logs"
     ensure_dir(logs_dir)
     log_file = logs_dir / "build.log"
     log_file.write_text("", encoding="utf-8")  # truncate on each run
 
-    dest_debian = repo / "debian"
-
-    if dest_debian.exists():
-        shutil.rmtree(dest_debian)
-
-    shutil.copytree(src_debian, dest_debian)
+    info("using repo debian/ for build")
 
     ok, _ = run_logged(
         ["dpkg-buildpackage", "-us", "-uc", "-b"],
@@ -88,15 +77,18 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     if ok:
         artifacts = _retain_artifacts(repo, orthos)
-        _cleanup_transient(orthos, dest_debian)
+        _cleanup_transient(orthos)
+        clean_debian_tree(dest_debian)
     else:
         artifacts = []
 
     result: dict[str, Any] = {
         "artifacts": artifacts,
         "artifacts_dir": str(orthos / "artifacts") if ok else None,
-        "generated_debian_dir": str(src_debian),
+        "generated_debian_dir": str(orthos / "debian"),
         "target_debian_dir": str(dest_debian),
+        "used_repo_debian": True,
+        "used_generated_debian": False,
         "failure_step": None if ok else "dpkg-buildpackage",
         "log_file": str(log_file),
         "repo_path": str(repo),
