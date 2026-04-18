@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from debcraft.backends.build_backend_meson import _clean_env
-from debcraft.debian_clean import clean_debian_tree
 from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import info
@@ -58,8 +57,10 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     dest_debian = repo / "debian"
     if not dest_debian.exists():
-        raise FileNotFoundError(f"repo debian/ not found: {dest_debian}\n"
-                                f"Run 'orthos-packager apply {repo}' first.")
+        raise FileNotFoundError(
+            f"repo debian/ not found: {dest_debian}\n"
+            f"Run 'orthos-packager apply {repo}' first."
+        )
 
     logs_dir = orthos / "logs"
     ensure_dir(logs_dir)
@@ -78,7 +79,6 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     if ok:
         artifacts = _retain_artifacts(repo, orthos)
         _cleanup_transient(orthos)
-        clean_debian_tree(dest_debian)
     else:
         artifacts = []
 
@@ -97,3 +97,4 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     write_json(orthos / _RESULT_FILE, result)
     return (0 if ok else 1), result
+    

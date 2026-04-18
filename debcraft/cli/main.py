@@ -10,17 +10,15 @@ from debcraft.analyze import analyze as run_analyze
 from debcraft.apply_debian import apply as run_apply
 from debcraft.backends.build_backend_debian import build as run_build
 from debcraft.backends.build_backend_meson import stage as meson_stage
-from debcraft.build_deps import (
-    install_missing_build_dependencies,
-    install_missing_pkgconfig_dependencies,
-    resolve_build_dependencies,
-    scan_meson_dependencies,
-    validate_pkg_config_closure,
-)
 from debcraft.classifier.artifact_classifier import classify as run_classify
 from debcraft.core.repo_probe import probe
+from debcraft.discovery.chroot_env import ChrootEnv, ChrootEnvError
+from debcraft.discovery.convergence import ConvergenceResult, run_convergence_loop
+from debcraft.discovery.runner import ChrootRunner, HostRunner, RunnerProtocol
 from debcraft.generator.debian_generator import generate as run_generate
 from debcraft.inventory.install_inventory import build_inventory
+from debcraft.privileged import client as priv_client
+from debcraft.privileged.launcher import PrivilegedHelperError
 from debcraft.suggest import suggest as run_suggest
 from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
@@ -101,6 +99,38 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Local path to the repository.",
     )
+    mod_group = smoke.add_mutually_exclusive_group()
+    mod_group.add_argument(
+        "--host",
+        action="store_true",
+        default=False,
+        help=(
+            "Run convergence directly on the host (pre-isolation mode). "
+            "Default (without this flag) is isolated chroot mode."
+        ),
+    )
+    smoke.add_argument(
+        "--refresh-chroot",
+        action="store_true",
+        default=False,
+        help="Delete and recreate the chroot before running.",
+    )
+    smoke.add_argument(
+        "--chroot-suite",
+        metavar="SUITE",
+        default="trixie",
+        help="Debian suite for chroot creation (default: trixie).",
+    )
+
+    reset_chroot_p = sub.add_parser(
+        "reset-chroot",
+        help="Safely tear down mounts and remove the chroot for a repo.",
+    )
+    reset_chroot_p.add_argument(
+        "repo_path",
+        metavar="PATH",
+        help="Local path to the repository whose chroot should be reset.",
+    )
 
     return parser
 
@@ -167,7 +197,7 @@ def _cmd_inventory(repo_path: str) -> int:
 
     try:
         rc, result = build_inventory(meta)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         error(str(exc))
         return 1
 
@@ -193,7 +223,7 @@ def _cmd_classify(repo_path: str) -> int:
 
     try:
         rc, result = run_classify(meta)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         error(str(exc))
         return 1
 
@@ -218,7 +248,7 @@ def _cmd_generate(repo_path: str) -> int:
 
     try:
         rc, result = run_generate(meta)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         error(str(exc))
         return 1
 
@@ -289,95 +319,54 @@ def _cmd_build(repo_path: str) -> int:
     return rc
 
 
-def _log_and_install_meson_deps(names: list[str]) -> int:
-    """Resolve + log + install Meson-declared build dependencies."""
-    report = resolve_build_dependencies(names)
-    for result in report.results:
-        if result.package is None:
-            error(
-                f"build-dep unresolved: {result.meson_name} - {result.warning}")
-            continue
-        flag = " [installed]" if result.is_installed else ""
-        bodhi_tag = " (bodhi)" if result.is_bodhi else ""
-        info(f"build-dep resolved: {result.meson_name} -> "
-             f"{result.package}{bodhi_tag} [source: {result.source}]{flag}")
-        if result.warning:
-            info(f"  warning: {result.warning}")
+def _run_convergence_loop(repo_path: str, runner: RunnerProtocol) -> int:
+    """Run the convergence scaffold via *runner* and log the outcome.
 
-    unresolved = report.unresolved_names()
-    if unresolved:
-        error("cannot continue: unresolved build dependencies: "
-              f"{', '.join(unresolved)}")
-        return 1
-
-    missing = report.missing_packages()
-    if not missing:
-        info("build-deps: all resolved packages already installed")
-        return 0
-
-    info(f"build-deps: installing {len(missing)} missing packages: "
-         f"{', '.join(missing)}")
-    rc = install_missing_build_dependencies(report)
-    if rc != 0:
-        error("build-deps: apt install failed")
-    return rc
-
-
-def _run_pkgconfig_closure(names: list[str]) -> int:
-    """Validate pkg-config closure and install anything still missing."""
-    info("pkg-config: validating closure for discovered dependency names")
-    for name in names:
-        info(f"pkg-config: checking {name}")
-    closure = validate_pkg_config_closure(names)
-
-    for pkg_name, (required_by, pkg) in sorted(closure.missing.items()):
-        resolved = pkg if pkg else "(unresolved)"
-        info(f"pkg-config missing: {pkg_name} (required by {required_by}) "
-             f"-> {resolved}")
-    for w in closure.warnings:
-        info(f"  warning: {w}")
-
-    if closure.unresolved:
-        for name in closure.unresolved:
-            error(f"pkg-config: cannot satisfy '{name}' after "
-                  f"{closure.retries} retries")
-        return 1
-
-    if not closure.missing:
-        info("pkg-config closure satisfied")
-        return 0
-
-    to_install = sorted({pkg for (_, pkg) in closure.missing.values() if pkg})
-    info(f"pkg-config deps: installing {len(to_install)} missing "
-         f"package(s): {', '.join(to_install)}")
-    rc = install_missing_pkgconfig_dependencies(closure)
-    if rc != 0:
-        error("pkg-config deps: apt install failed")
-        return rc
-
-    closure2 = validate_pkg_config_closure(names)
-    if not closure2.all_satisfied():
-        for name in closure2.unresolved:
-            error(f"pkg-config: still failing after install: {name}")
-        return 1
-
-    info("pkg-config closure satisfied")
-    return 0
-
-
-def _resolve_and_install_build_deps(repo_path: str) -> int:
-    """Scan meson.build, resolve+install build deps, then close pkg-config."""
+    Returns:
+      0 — converged successfully or stalled (nonfatal; stage step handles it)
+      1 — apt install failed inside the loop (fatal; smoke must stop)
+    """
     repo = Path(repo_path)
-    names = scan_meson_dependencies(repo)
-    if not names:
-        info("build-deps: no meson dependency() declarations found")
+    result: ConvergenceResult = run_convergence_loop(repo, runner=runner)
+
+    info(f"convergence: {result.passes} pass(es) completed "
+         f"(mode={result.runner_mode}, scope={result.isolation_scope})")
+
+    for entry in result.provenance:
+        info(f"convergence: {entry.package} "
+             f"[{entry.miss_type}] pass {entry.pass_number}")
+
+    if result.large_batch_warnings:
+        for w in result.large_batch_warnings:
+            info(f"convergence: WARNING — {w}")
+
+    # Fatal: apt install failed inside the convergence loop.
+    if result.install_failed:
+        error("convergence: apt install failed — aborting smoke")
+        return 1
+
+    if result.success:
+        info("convergence: meson setup converged — "
+             "setup-time dependencies satisfied")
         return 0
 
-    info(f"build-deps: discovered {len(names)} meson dependency names")
-    rc = _log_and_install_meson_deps(names)
-    if rc != 0:
-        return rc
-    return _run_pkgconfig_closure(names)
+    if result.stalled:
+        if result.stall_reason == "unresolved":
+            info(f"convergence: stalled — "
+                 f"{len(result.unresolved_misses)} miss(es) unresolvable:")
+            for miss in result.unresolved_misses:
+                info(f"  {miss.miss_type}: {miss.name}")
+                info(f"    from: {miss.raw_line}")
+        else:
+            info("convergence: stalled — no new packages to install; "
+                 "proceeding to stage")
+    else:
+        info("convergence: max passes exhausted without setup success; "
+             "proceeding to stage")
+
+    # Nonfatal stall — let the stage step fail explicitly so the
+    # human maintainer sees a concrete error.
+    return 0
 
 
 def _partition_debs(debs: list[str]) -> tuple[list[str], list[str]]:
@@ -476,9 +465,65 @@ def _install_built_debs(debs: list[str]) -> int:
 
 
 # pylint: disable=too-many-return-statements
-def _cmd_smoke(repo_path: str) -> int:
+def _cmd_smoke(args: argparse.Namespace) -> int:
     """Run the full pipeline, install packages, and resolve dependencies."""
-    rc = _resolve_and_install_build_deps(repo_path)
+    repo_path = args.repo_path
+    repo = Path(repo_path)
+
+    if args.host:
+        # Pre-isolation host mode: explicit opt-in.
+        info("convergence: mode = host (pre-isolation; --host flag set)")
+        runner: RunnerProtocol = HostRunner()
+        rc = _run_convergence_loop(repo_path, runner)
+    else:
+        # Isolated chroot mode: default authoritative path.
+        orthos = orthos_dir(repo)
+        chroot_root = orthos / "chroot"
+        logs_dir = orthos / "logs"
+        build_dir = orthos / "build"
+        ensure_dir(logs_dir)
+        ensure_dir(build_dir)
+
+        chroot_log = logs_dir / "chroot-setup.log"
+        env = ChrootEnv(chroot_root)
+        try:
+            env.ensure_ready(
+                suite=args.chroot_suite,
+                refresh=args.refresh_chroot,
+                log_file=chroot_log,
+            )
+        except ChrootEnvError as exc:
+            error(f"convergence: chroot setup failed: {exc}")
+            return 1
+
+        try:
+            env.setup_mounts(
+                source_repo=repo,
+                build_dir=build_dir,
+                logs_dir=logs_dir,
+            )
+        except ChrootEnvError as exc:
+            error(f"convergence: mount setup failed: {exc}")
+            env.teardown_mounts()
+            return 1
+
+        try:
+            runner = ChrootRunner(env)
+            info(f"convergence: mode = chroot ({chroot_root})")
+            rc = _run_convergence_loop(repo_path, runner)
+        finally:
+            # Primary cleanup guarantee: always teardown mounts.
+            env.teardown_mounts()
+
+        if rc != 0:
+            return rc
+
+        # Fix 4: make isolation scope explicit after convergence completes.
+        info(
+            "smoke: convergence ran in chroot — "
+            "stage/build pipeline runs on host in this round"
+        )
+
     if rc != 0:
         return rc
 
@@ -500,6 +545,25 @@ def _cmd_smoke(repo_path: str) -> int:
         return rc
 
     info("smoke test complete ✔")
+    return 0
+
+
+def _cmd_reset_chroot(repo_path: str) -> int:
+    """Tear down mounts and remove the chroot workspace for a repo.
+
+    Reads /proc/mounts (via the privileged helper) to find any active mounts
+    under the chroot root, unmounts them, then removes the chroot tree.
+    The user does not need to run sudo umount or sudo rm -rf manually.
+    """
+    repo = Path(repo_path)
+    chroot_root = orthos_dir(repo) / "chroot"
+    info(f"reset-chroot: target: {chroot_root}")
+    try:
+        priv_client.reset_chroot(chroot_root)
+    except PrivilegedHelperError as exc:
+        error(f"reset-chroot: failed: {exc}")
+        return 1
+    info(f"reset-chroot: done: {chroot_root}")
     return 0
 
 
@@ -586,16 +650,17 @@ def main() -> None:
         sys.exit(1)
 
     handlers = {
-        "scan": _cmd_scan,
-        "stage": _cmd_stage,
-        "inventory": _cmd_inventory,
-        "classify": _cmd_classify,
-        "generate": _cmd_generate,
-        "apply": lambda p: _cmd_apply(p, force=getattr(args, "force", False)),
-        "build": _cmd_build,
-        "analyze": _cmd_analyze,
-        "suggest": _cmd_suggest,
-        "smoke": _cmd_smoke,
+        "scan": lambda: _cmd_scan(args.repo_path),
+        "stage": lambda: _cmd_stage(args.repo_path),
+        "inventory": lambda: _cmd_inventory(args.repo_path),
+        "classify": lambda: _cmd_classify(args.repo_path),
+        "generate": lambda: _cmd_generate(args.repo_path),
+        "apply": lambda: _cmd_apply(args.repo_path, force=getattr(args, "force", False)),
+        "build": lambda: _cmd_build(args.repo_path),
+        "analyze": lambda: _cmd_analyze(args.repo_path),
+        "suggest": lambda: _cmd_suggest(args.repo_path),
+        "smoke": lambda: _cmd_smoke(args),
+        "reset-chroot": lambda: _cmd_reset_chroot(args.repo_path),
     }
 
     handler = handlers.get(args.command)
@@ -603,7 +668,7 @@ def main() -> None:
         parser.print_help(sys.stderr)
         sys.exit(1)
 
-    sys.exit(handler(args.repo_path))
+    sys.exit(handler())
 
 
 if __name__ == "__main__":

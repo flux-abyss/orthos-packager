@@ -1,5 +1,9 @@
 """Build dependency inference and resolution for Meson projects.
 
+scan_meson_dependencies() is the static hint-layer provider for the
+convergence scaffold in debcraft.discovery.convergence.  It is no longer
+the sole source of truth for build dependency decisions.
+
 Scans meson.build files for dependency() declarations, resolves each name to
 an installable Debian package, and prefers Bodhi-native packages over generic
 Debian/Ubuntu ones.  Resolution order:
@@ -8,11 +12,10 @@ Debian/Ubuntu ones.  Resolution order:
   2. Already-installed package satisfying the need
   3. Bodhi apt candidate
   4. Fallback apt candidate from any enabled repo
-  5. Unresolved  →  logged clearly, pipeline aborts
+  5. Unresolved — logged; the convergence loop handles stall conditions
 
-After the first-pass Meson build-dep install, a second pass validates the
-pkg-config closure and installs any transitive pkg-config dependencies that
-were not implied directly by the Meson names (e.g. lua51 pulled in by edje).
+BODHI_PKGCONFIG_MAP and validate_pkg_config_closure remain available for
+standalone use or future post-apply pkg-config verification passes.
 """
 
 from __future__ import annotations
@@ -139,6 +142,20 @@ BODHI_BUILD_DEP_MAP: dict[str, str] = {
     "pcre": "libpcre3-dev",
     "pcre2": "libpcre2-dev",
     "threads": "libpthread-stubs0-dev",
+    # System authentication / session
+    "pam": "libpam0g-dev",
+    "libpam": "libpam0g-dev",
+    "systemd": "libsystemd-dev",
+    "libsystemd": "libsystemd-dev",
+    "libudev": "libudev-dev",
+    # Network / avahi
+    "avahi-client": "libavahi-client-dev",
+    "avahi-core": "libavahi-core-dev",
+    "libnl-3.0": "libnl-3-dev",
+    "libnl-genl-3.0": "libnl-genl-3-dev",
+    # Block / mount
+    "mount": "libmount-dev",
+    "blkid": "libblkid-dev",
 }
 
 # URL fragments that identify a Bodhi-native apt repository origin.
@@ -187,20 +204,85 @@ class BuildDependencyReport:
 # Handles both single and double quotes, optional trailing options.
 _DEP_RE = re.compile(r"""dependency\(\s*['"]([^'"]+)['"]""")
 
+# Captures cc.find_library('name') and bare find_library('name') calls.
+# These surface setup-time requirements that dependency() never sees.
+_FIND_LIB_RE = re.compile(
+    r"""(?:cc|compiler|meson)\.find_library\(\s*['"]([^'"]+)['"]"""
+    r"""|\bfind_library\(\s*['"]([^'"]+)['"]""")
+
+# Generic libc / toolchain symbols that find_library() may name but should
+# never become explicit Debian Build-Depends entries.  dh_shlibdeps handles
+# these, and their -dev packages are pulled in transitively anyway.
+_FIND_LIB_SKIP = {
+    "m", "c", "rt", "dl", "pthread", "math", "execinfo",
+    "stdc++", "gcc", "gcc_s", "atomic",
+    "resolv", "nsl", "util",
+}
+
+# Option names from meson_options.txt: only captured if they are already
+# a key in BODHI_BUILD_DEP_MAP.  Option names are project-local; the only
+# reliable external-dep signal is map membership.
+_OPT_RE = re.compile(r"""option\(\s*['"]([^'"]+)['"]""")
+
+
+def _scan_file_for_pattern(
+    path: "Path",
+    pattern: re.Pattern[str],
+) -> list[str]:
+    """Return all non-empty lowercased group captures from *pattern* in *path*."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found: list[str] = []
+    for m in pattern.finditer(text):
+        for g in m.groups():
+            if g:
+                found.append(g.strip().lower())
+                break
+    return found
+
 
 def scan_meson_dependencies(repo: Path) -> list[str]:
-    """Return sorted unique Meson dependency names declared in *repo*.
+    """Return sorted unique external dependency names for *repo*.
 
-    Scans meson.build and any meson.build files in subdirectories.
+    Three sources, each with its own precision filter:
+
+    1. dependency('name') — external pkg-config/cmake deps by Meson convention.
+       Names shorter than 2 characters are dropped (single-char noise).
+
+    2. cc.find_library('name') / find_library('name') — explicit library
+       link requirements.  Generic libc/toolchain names are filtered out.
+
+    3. option names from meson_options.txt / meson.options — gated to map
+       membership only.  Project-internal feature toggles produce false
+       positives when collected openly; map membership is the reliable
+       signal that an option name represents a real external dep.
+
+    All sources use the same lowercase name space and feed the same
+    resolve/install path.
     """
     names: set[str] = set()
+
+    # 1 + 2: scan every meson.build in the repo tree.
     for meson_file in repo.rglob("meson.build"):
-        try:
-            text = meson_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for match in _DEP_RE.finditer(text):
-            names.add(match.group(1).strip().lower())
+        # dependency() — drop names shorter than 2 chars.
+        for name in _scan_file_for_pattern(meson_file, _DEP_RE):
+            if len(name) >= 2:
+                names.add(name)
+        # find_library() — drop generic libc/toolchain symbols.
+        for name in _scan_file_for_pattern(meson_file, _FIND_LIB_RE):
+            if name not in _FIND_LIB_SKIP:
+                names.add(name)
+
+    # 3: option names — only keep names already in BODHI_BUILD_DEP_MAP.
+    for opts_name in ("meson_options.txt", "meson.options"):
+        opts_file = repo / opts_name
+        if opts_file.exists():
+            for name in _scan_file_for_pattern(opts_file, _OPT_RE):
+                if name in BODHI_BUILD_DEP_MAP:
+                    names.add(name)
+
     return sorted(names)
 
 

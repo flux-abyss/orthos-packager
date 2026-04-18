@@ -1,5 +1,6 @@
 """Walk a staged install tree and classify every file."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 
 _INVENTORY_FILE = "install-inventory.json"
+_STAGE_RESULT_FILE = "stage-result.json"
 
 
 # pylint: disable=too-many-return-statements
@@ -76,19 +78,52 @@ def _walk_stage(stage_dir: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _check_stage_success(orthos: Path) -> None:
+    """Raise if the most recent stage result reports failure or is missing.
+
+    Reads stage-result.json and checks that:
+    - the file exists (stage was run)
+    - success == True (stage did not fail)
+    - the stage/ directory is not empty (install produced files)
+
+    Raises FileNotFoundError or ValueError with a clear message.
+    """
+    result_file = orthos / _STAGE_RESULT_FILE
+    if not result_file.exists():
+        raise FileNotFoundError(
+            f"stage-result.json not found: {result_file}\n"
+            f"Run 'orthos-packager stage <repo>' first.")
+
+    data = json.loads(result_file.read_text(encoding="utf-8"))
+    if not data.get("success", False):
+        step = data.get("failure_step", "unknown step")
+        log = data.get("log_file", "<no log>")
+        raise ValueError(
+            f"stage failed at: {step}\n"
+            f"Fix the build error and rerun 'orthos-packager stage'.\n"
+            f"See log: {log}")
+
+    stage_dir = orthos / "stage"
+    if not stage_dir.exists() or not any(stage_dir.rglob("*")):
+        raise ValueError(
+            f"stage directory is empty: {stage_dir}\n"
+            f"Meson install produced no files. Rerun 'orthos-packager stage'.")
+
+
 def build_inventory(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """Walk the staged tree for *meta* and write an inventory JSON.
 
+    Raises FileNotFoundError or ValueError if stage has not completed
+    successfully, or if the install tree is empty.
     Returns (exit_code, result_dict).
     """
     repo = Path(meta["repo_path"])
     orthos = orthos_dir(repo)
+
+    # Fail closed: refuse to inventory a failed or empty stage.
+    _check_stage_success(orthos)
+
     stage_dir = orthos / "stage"
-
-    if not stage_dir.exists():
-        raise FileNotFoundError(f"stage directory not found: {stage_dir}\n"
-                                f"Run 'orthos-packager stage {repo}' first.")
-
     entries = _walk_stage(stage_dir)
 
     counts: dict[str, int] = {}

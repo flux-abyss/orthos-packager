@@ -68,11 +68,20 @@ def _resolve_maintainer(meta: dict[str, Any]) -> str:
 
 
 def _load_plan(plan_file: Path) -> dict[str, Any]:
-    """Read package-plan.json; raise FileNotFoundError if absent."""
+    """Read package-plan.json; raise FileNotFoundError if absent.
+
+    Also raises ValueError if the plan contains zero files across all
+    buckets, which indicates a failed or empty stage.
+    """
     if not plan_file.exists():
         raise FileNotFoundError(f"package plan not found: {plan_file}\n"
                                 f"Run 'orthos-packager classify <repo>' first.")
     data: dict[str, Any] = json.loads(plan_file.read_text(encoding="utf-8"))
+    if data.get("total_files", 0) == 0:
+        raise ValueError(
+            f"package plan contains zero files: {plan_file}\n"
+            f"The stage produced no installable output. Fix the build and\n"
+            f"rerun 'orthos-packager stage' then 'orthos-packager classify'.")
     return data
 
 

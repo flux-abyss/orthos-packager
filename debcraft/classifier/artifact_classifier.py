@@ -78,6 +78,11 @@ def classify(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         inventory_file)  # raises FileNotFoundError if missing
 
     entries: list[dict[str, Any]] = inventory.get("entries", [])
+    if not entries:
+        raise ValueError(
+            f"inventory is empty: {inventory_file}\n"
+            f"The stage produced no files. Fix the build and rerun "
+            f"'orthos-packager stage'.")
     package_buckets = _group_into_buckets(entries)
 
     plan_file = orthos / _PLAN_FILE

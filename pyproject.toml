@@ -10,6 +10,7 @@ description = "Deterministic Debian packager for Meson projects."
 
 [project.scripts]
 orthos-packager = "debcraft.cli.main:main"
+orthos-priv = "debcraft.privileged.helper:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
