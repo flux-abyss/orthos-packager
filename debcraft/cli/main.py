@@ -190,6 +190,10 @@ def _cmd_stage(repo_path: str) -> int:
             info(f"         {verdict['summary']}")
             info(f"         action: {verdict['suggested_action']}")
 
+        if result.get("next_mode") == "compatibility_search":
+            info("next:    compatibility search mode")
+            info("prefer:  an older release/tag before more dependency resolution")
+
     return rc
 
 

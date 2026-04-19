@@ -56,6 +56,21 @@ def _stage_include_roots() -> list[str]:
     return [p for p in _HOST_INCLUDE_CANDIDATES if Path(p).is_dir()]
 
 
+def _next_step_strategy(verdicts: list[dict]) -> dict | None:
+    """Return a structured strategy dict if verdicts indicate a mode switch.
+
+    Returns None when the verdicts do not require a strategy change (i.e.
+    ordinary dependency resolution should continue).
+    """
+    ids = {v.get("rule_id") for v in verdicts}
+    if "source_too_new_for_target_api" in ids:
+        return {
+            "next_mode": "compatibility_search",
+            "compatibility_strategy": "prefer_tag_or_release",
+            "compatibility_reason": "source_too_new_for_target_api",
+        }
+    return None
+
 
 def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
     """Run the full Meson staging flow for the repo described by *meta*.
@@ -148,6 +163,13 @@ def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
 
     if expert_verdicts:
         result["expert_verdicts"] = expert_verdicts
+        # Translate verdicts into a structured pipeline strategy recommendation.
+        # Currently only one verdict drives a strategy change; extend here as
+        # new rules are added.
+        strategy = _next_step_strategy(expert_verdicts)
+        if strategy:
+            result.update(strategy)
 
     write_json(orthos / _RESULT_FILE, result)
     return (0 if success else 1), result
+
