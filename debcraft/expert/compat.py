@@ -53,24 +53,34 @@ from debcraft.expert.models import ExpertVerdict
 
 _RULE_ID = "source_too_new_for_target_api"
 
-# ---------------------------------------------------------------------------
-# Compile-output patterns that indicate an API mismatch at the C level.
-# Each pattern captures the problematic symbol name in group 1.
-# ---------------------------------------------------------------------------
+# Quote characters seen in compiler diagnostics (ASCII and Unicode).
+_Q = r"""['"‘’“”]"""
 
 _MISMATCH_PATTERNS: list[re.Pattern[str]] = [
     # GCC/Clang: implicit declaration
-    re.compile(r"implicit declaration of function ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
+    re.compile(
+        rf"implicit declaration of function {_Q}([A-Za-z_][A-Za-z0-9_]*){_Q}"
+    ),
     # GCC/Clang: unknown type name
-    re.compile(r"unknown type name ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
+    re.compile(
+        rf"unknown type name {_Q}([A-Za-z_][A-Za-z0-9_]*){_Q}"
+    ),
     # GCC/Clang: struct member access on wrong type
-    re.compile(r"has no member named ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
+    re.compile(
+        rf"has no member named {_Q}([A-Za-z_][A-Za-z0-9_]*){_Q}"
+    ),
     # GCC/Clang: undeclared identifier
-    re.compile(r"['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] undeclared"),
+    re.compile(
+        rf"{_Q}([A-Za-z_][A-Za-z0-9_]*){_Q} undeclared"
+    ),
     # GCC/Clang: not declared in this scope
-    re.compile(r"['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] was not declared in this scope"),
+    re.compile(
+        rf"{_Q}([A-Za-z_][A-Za-z0-9_]*){_Q} was not declared in this scope"
+    ),
     # GCC/Clang: 'X' does not name a type
-    re.compile(r"['\"]([A-Za-z_][A-Za-z0-9_]*)['\"] does not name a type"),
+    re.compile(
+        rf"{_Q}([A-Za-z_][A-Za-z0-9_]*){_Q} does not name a type"
+    ),
 ]
 
 
