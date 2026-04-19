@@ -305,9 +305,9 @@ def run_convergence_loop(
 
         meson_cmd = [
             "meson", "setup",
-            runner.meson_build_path(build_dir),
             runner.meson_source_path(repo),
-            *_MESON_FLAGS,
+            runner.meson_build_path(build_dir),
+          *_MESON_FLAGS,
         ]
 
         info(f"convergence: pass {pass_num} — running meson setup "

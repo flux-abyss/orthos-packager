@@ -112,7 +112,12 @@ def invoke(operation: str, args: dict) -> dict:
         result = subprocess.run(
             launcher_cmd,
             stdout=subprocess.PIPE,
-            stderr=None,   # helper's stderr passes through to the user's terminal
+            # Capture stderr separately so:
+            # (1) sudo/pkexec auth errors are included in exception messages,
+            # (2) no launcher output can contaminate the stdout JSON stream.
+            # Captured stderr is forwarded to our own stderr on success so
+            # helper diagnostic logs still reach the terminal.
+            stderr=subprocess.PIPE,
             text=True,
             check=False,
         )
@@ -121,16 +126,28 @@ def invoke(operation: str, args: dict) -> dict:
             f"could not launch helper ({launcher_cmd[0]}): {exc}"
         ) from exc
 
+    # Forward helper stderr (diagnostic logs) to our stderr unconditionally.
+    # This preserves the contract that helper logs appear on the terminal.
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        sys.stderr.flush()
+
     if result.returncode != 0:
-        # Helper itself may have printed an error JSON line or plain text.
-        raw = (result.stdout or "").strip()
+        # The launcher (sudo/pkexec) or the helper process itself exited
+        # nonzero. Build the most informative message possible.
+        # Priority: JSON error field > raw stdout > stderr > exit code only.
+        raw_out = (result.stdout or "").strip()
+        raw_err = (result.stderr or "").strip()
         try:
-            parsed = json.loads(raw)
-            msg = parsed.get("error", raw)
+            parsed = json.loads(raw_out)
+            msg = parsed.get("error", raw_out)
         except json.JSONDecodeError:
-            msg = raw or f"helper exited {result.returncode}"
+            # stdout is not JSON — likely a sudo/pkexec message or empty.
+            # Include both stdout and stderr so the actual cause is visible.
+            parts = [p for p in (raw_out, raw_err) if p]
+            msg = "  |  ".join(parts) if parts else f"helper exited {result.returncode}"
         raise PrivilegedHelperError(
-            f"orthos-priv {operation!r} failed: {msg}"
+            f"orthos-priv {operation!r} failed (exit {result.returncode}): {msg}"
         )
 
     raw_stdout = (result.stdout or "").strip()
@@ -143,7 +160,8 @@ def invoke(operation: str, args: dict) -> dict:
         parsed = json.loads(raw_stdout)
     except json.JSONDecodeError as exc:
         raise PrivilegedHelperError(
-            f"orthos-priv {operation!r}: could not parse helper output: {exc}"
+            f"orthos-priv {operation!r}: could not parse helper output "
+            f"(stdout={raw_stdout!r}): {exc}"
         ) from exc
 
     if not parsed.get("ok"):

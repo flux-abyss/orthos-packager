@@ -31,6 +31,7 @@ Allowlisted operations:
     pkg-query-exists      chroot apt-cache policy
     dpkg-search-path      chroot dpkg -S
     apt-search-dev        chroot apt-cache search (dev package lookup)
+    pkgconfig-file-search chroot apt-file search for <name>.pc — returns owning package
     destroy-chroot        rm -rf <root>
     reset-chroot          teardown mounts then destroy
 
@@ -151,15 +152,13 @@ def _validate_bind_dst(root: Path, dst: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 def _ok(result: object = None) -> None:
-    print(json.dumps({"ok": True, "result": result}))
-
+    print(json.dumps({"ok": True, "result": result}), flush=True)
 
 def _fail(message: str) -> None:
-    print(json.dumps({"ok": False, "error": message}))
-
+    print(json.dumps({"ok": False, "error": message}), flush=True)
 
 def _log(message: str) -> None:
-    print(message, file=sys.stderr)
+    print(message, file=sys.stderr, flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +477,10 @@ def _op_apt_install_in_chroot(args: dict) -> None:
             "apt-get", "install", "-y", "--no-install-recommends",
             *packages,
         ],
+        stdout=sys.stderr,
+        stderr=sys.stderr,
         check=False,
+        text=True,
     )
     _log(f"orthos-priv: apt-install-in-chroot done: rc={result.returncode}")
     _ok(result.returncode)
@@ -590,6 +592,121 @@ def _op_apt_search_dev(args: dict) -> None:
     _ok(None)
 
 
+# ---------------------------------------------------------------------------
+# pkgconfig-file-search — find the package providing <name>.pc via apt-file
+# ---------------------------------------------------------------------------
+
+# Sentinel written inside the chroot after the first apt-file db update so we
+# don't pay the update cost on every lookup during a single convergence run.
+_APT_FILE_DB_SENTINEL = ".orthos-apt-file-updated"
+
+
+def _ensure_apt_file(root: Path) -> None:
+    """Install apt-file and update its database inside *root* if not done yet.
+
+    Idempotent: guarded by a sentinel file so the heavy update only runs once
+    per chroot. Raises RuntimeError if installation or update fails.
+    """
+    sentinel = root / "tmp" / _APT_FILE_DB_SENTINEL
+    if sentinel.exists():
+        return
+
+    # Install apt-file if not present.
+    check = subprocess.run(
+        ["chroot", str(root), "dpkg", "-s", "apt-file"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if check.returncode != 0:
+        _log("orthos-priv: pkgconfig-file-search: installing apt-file")
+        install = subprocess.run(
+            [
+                "chroot", str(root),
+                "apt-get", "install", "-y", "--no-install-recommends", "apt-file",
+            ],
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            check=False,
+        )
+        if install.returncode != 0:
+            raise RuntimeError("pkgconfig-file-search: failed to install apt-file")
+
+    # Update the apt-file database (fetches Contents files from apt sources).
+    _log("orthos-priv: pkgconfig-file-search: updating apt-file database")
+    update = subprocess.run(
+        ["chroot", str(root), "apt-file", "update"],
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        check=False,
+    )
+    if update.returncode != 0:
+        raise RuntimeError("pkgconfig-file-search: apt-file update failed")
+
+    # Write sentinel so subsequent calls skip the update.
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+
+
+def _op_pkgconfig_file_search(args: dict) -> None:
+    """Find the Debian package that owns <pkgconfig_name>.pc inside *root*.
+
+    Strategy:
+      1. Ensure apt-file is installed and its database is current (once per chroot).
+      2. Run: apt-file search --package-only <name>.pc
+         This queries Contents metadata — no network required after apt-file update.
+      3. Among all candidates:
+         a. Prefer *-dev packages (deterministic: alphabetical first among -dev).
+         b. Fall back to the alphabetical-first non-dev package.
+      4. Return None if no package is found.
+
+    Returns a single package name string, or null.
+    """
+    root = _validate_chroot_root(Path(args["root"]))
+    name = str(args["name"]).strip().lower()
+    pc_filename = f"{name}.pc"
+
+    _log(f"orthos-priv: pkgconfig-file-search: looking for {pc_filename}")
+
+    try:
+        _ensure_apt_file(root)
+    except RuntimeError as exc:
+        _log(f"orthos-priv: pkgconfig-file-search: {exc} — returning None")
+        _ok(None)
+        return
+
+    result = subprocess.run(
+        [
+            "chroot", str(root),
+            "apt-file", "search", "--package-only", pc_filename,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    candidates: list[str] = [
+        line.strip().lower()
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
+
+    if not candidates:
+        _log(f"orthos-priv: pkgconfig-file-search: no package owns {pc_filename}")
+        _ok(None)
+        return
+
+    # Prefer -dev packages; among equals choose alphabetical first for determinism.
+    dev_candidates = sorted(p for p in candidates if p.endswith("-dev"))
+    if dev_candidates:
+        chosen = dev_candidates[0]
+    else:
+        chosen = sorted(candidates)[0]
+
+    _log(f"orthos-priv: pkgconfig-file-search: {pc_filename} -> {chosen}")
+    _ok(chosen)
+
+
 def _op_destroy_chroot(args: dict) -> None:
     root = _validate_destroy_root(Path(args["root"]))
 
@@ -668,6 +785,7 @@ _OPERATIONS: dict = {
     "pkg-query-exists":      _op_pkg_query_exists,
     "dpkg-search-path":      _op_dpkg_search_path,
     "apt-search-dev":        _op_apt_search_dev,
+    "pkgconfig-file-search": _op_pkgconfig_file_search,
     "destroy-chroot":        _op_destroy_chroot,
     "reset-chroot":          _op_reset_chroot,
 }

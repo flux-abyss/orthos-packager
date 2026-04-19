@@ -123,6 +123,18 @@ class RunnerProtocol(Protocol):
         """
         ...
 
+    def pkgconfig_file_search(self, name: str) -> str | None:
+        """Return the package that owns *name*.pc in this runner's environment.
+
+        Uses apt-file search against Contents metadata. In chroot mode this
+        installs and updates apt-file inside the chroot on first use (guarded
+        by a sentinel so cost is paid only once). In host mode returns None
+        (the host path uses a different resolution strategy via miss_mapper).
+
+        Returns a normalised package name, or None.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # HostRunner
@@ -243,6 +255,15 @@ class HostRunner:
                 return pkg
         return None
 
+    def pkgconfig_file_search(self, name: str) -> str | None:
+        """Not implemented in host mode.
+
+        Host-mode pkg-config resolution uses apt-file via _apt_file_search_host
+        in miss_mapper (host-side). The chroot-specific pkgconfig-file-search
+        operation is only meaningful for ChrootRunner.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # ChrootRunner
@@ -336,5 +357,18 @@ class ChrootRunner:
         """Find a -dev package for *meson_name* inside the chroot."""
         try:
             return client.apt_search_dev(self._chroot_root, meson_name)
+        except PrivilegedHelperError:
+            return None
+
+    def pkgconfig_file_search(self, name: str) -> str | None:
+        """Return the package that owns *name*.pc inside the chroot, or None.
+
+        Delegates to the pkgconfig-file-search helper operation, which uses
+        apt-file inside the chroot. First call installs apt-file and updates
+        the Contents database (slow, once per chroot lifetime). Subsequent
+        calls use the cached database.
+        """
+        try:
+            return client.pkgconfig_file_search(self._chroot_root, name)
         except PrivilegedHelperError:
             return None

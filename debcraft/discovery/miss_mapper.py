@@ -1,12 +1,16 @@
 """Map a DepMiss to a candidate Debian package name.
 
-Resolution is deterministic and offline-only. No internet lookups.
+Resolution is deterministic. No hardcoded package maps are used for
+pkg-config-miss or library-miss resolution beyond the curated seed maps.
 
 Resolution order per miss type:
 
   pkg-config-miss:
     1. BODHI_BUILD_DEP_MAP (curated)
-    2. runner.pkg_query_exists on lib<name>-dev then apt-cache search fallback
+    2. runner.pkgconfig_file_search — apt-file search for <name>.pc in chroot
+       (chroot mode only; installs apt-file and fetches Contents metadata on
+       first use; subsequent calls use the cached database)
+    3. runner.pkg_query_exists on lib<name>-dev then apt-cache search fallback
 
   tool-miss:
     1. TOOL_DEP_MAP (curated)
@@ -15,19 +19,24 @@ Resolution order per miss type:
   header-miss:
     1. HEADER_DEP_MAP (curated)
     2. runner.dpkg_search_path (queries inside runner's environment)
-    3. apt-file search — host mode only; skipped in isolated mode
+    3. _apt_file_search_host — host mode only; not used in chroot mode
+       (chroot isolation: querying the host apt-file database would reflect
+       host package metadata, not the chroot's apt sources)
 
   library-miss:
     1. BODHI_BUILD_DEP_MAP (curated)
     2. runner.pkg_query_exists on lib<name>-dev then apt-cache search fallback
+    3. runner.pkgconfig_file_search — apt-file search for <name>.pc in chroot
+       (chroot mode only; many libraries ship a same-named .pc file)
 
 All returned package names are normalised (lowercased, stripped).
 
 Runner awareness:
   When a runner is provided, fallback package queries run inside the runner's
-  environment (host or chroot). When runner is None the host is used.
-  apt-file is skipped in isolated (chroot) mode — it is not available inside
-  the chroot base install and querying the host would break isolation.
+  own environment so chroot mode does not consult host package metadata.
+  When runner is None, host-side tools are used directly.
+  pkgconfig_file_search is only invoked when a runner is present; HostRunner
+  returns None from that method (host header resolution uses _apt_file_search_host).
 """
 
 from __future__ import annotations
@@ -330,7 +339,17 @@ def map_miss_to_package(
         if pkg:
             return pkg.strip().lower()
 
-        # 2. Runner-aware dev-package search.
+        # 2. apt-file search for <name>.pc inside the chroot.
+        #    This is the authoritative resolver: it finds the exact package
+        #    that ships the .pc file, derived from distro Contents metadata.
+        #    Only meaningful in chroot mode (HostRunner returns None here).
+        if runner is not None:
+            pkg = runner.pkgconfig_file_search(name)
+            if pkg:
+                info(f"miss_mapper: pkgconfig-file-search resolved {name!r} -> {pkg}")
+                return pkg.strip().lower()
+
+        # 3. Runner-aware dev-package search (name pattern heuristic).
         pkg = _dev_search(name)
         if pkg:
             return pkg.strip().lower()
@@ -353,13 +372,14 @@ def map_miss_to_package(
         if pkg:
             return pkg.strip().lower()
 
-        # 3. apt-file: host mode only.
-        #    In isolated mode, apt-file is not installed inside the chroot
-        #    base and querying the host database would break isolation.
+        # 3. _apt_file_search_host: host mode only.
+        #    In chroot mode, querying the host apt-file database would reflect
+        #    host package metadata rather than the chroot's apt sources, breaking
+        #    isolation. Header resolution inside a chroot relies on steps 1 and 2.
         if in_chroot:
             info(
-                f"miss_mapper: skipping apt-file for '{basename}' "
-                "(isolated mode — apt-file not available in chroot)"
+                f"miss_mapper: skipping host apt-file for header '{basename}' "
+                "(chroot mode — host apt-file database would break isolation)"
             )
         else:
             pkg = _apt_file_search_host(basename)
@@ -381,6 +401,16 @@ def map_miss_to_package(
         pkg = _dev_search(name)
         if pkg:
             return pkg.strip().lower()
+
+        # 3. apt-file search for <name>.pc — many libraries ship a same-named
+        #    pkg-config file; this catches cases where the library name and the
+        #    .pc name match but the package name does not follow the lib<x>-dev
+        #    pattern (e.g. versioned names like lua51).
+        if runner is not None:
+            pkg = runner.pkgconfig_file_search(name)
+            if pkg:
+                info(f"miss_mapper: pkgconfig-file-search (library) resolved {name!r} -> {pkg}")
+                return pkg.strip().lower()
 
         return None
 

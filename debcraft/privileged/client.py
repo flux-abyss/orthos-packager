@@ -20,6 +20,7 @@ Public API:
     pkg_query_exists(root, package) -> bool
     dpkg_search_path(root, pattern) -> str | None
     apt_search_dev(root, meson_name) -> str | None
+    pkgconfig_file_search(root, name) -> str | None
     destroy_chroot(root)
     reset_chroot(root)
 """
@@ -41,6 +42,7 @@ __all__ = [
     "pkg_query_exists",
     "dpkg_search_path",
     "apt_search_dev",
+    "pkgconfig_file_search",
     "destroy_chroot",
     "reset_chroot",
 ]
@@ -167,6 +169,25 @@ def apt_search_dev(root: Path, meson_name: str) -> str | None:
     result = invoke("apt-search-dev", {
         "root": str(root),
         "meson_name": meson_name,
+    })
+    val = result.get("result")
+    return str(val) if val else None
+
+
+def pkgconfig_file_search(root: Path, name: str) -> str | None:
+    """Return the package that owns *name*.pc inside *root*, or None.
+
+    Uses apt-file search inside the chroot against the installed Contents
+    metadata. apt-file is installed and its database updated on first use
+    (idempotent, guarded by a sentinel). Prefers *-dev packages among
+    multiple candidates.
+
+    This is the authoritative .pc-file resolver: it finds the actual package
+    that ships the pkg-config module, with no hardcoded maps.
+    """
+    result = invoke("pkgconfig-file-search", {
+        "root": str(root),
+        "name": name,
     })
     val = result.get("result")
     return str(val) if val else None
