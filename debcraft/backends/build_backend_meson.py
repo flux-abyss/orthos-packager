@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from debcraft.expert.compat import evaluate_compile_failure
 from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.shell import run_logged
@@ -33,6 +34,27 @@ def _clean_env() -> dict[str, str]:
 
     env["PATH"] = os.pathsep.join(parts)
     return env
+
+
+# Known host include roots used by the system compiler.
+# stage() runs meson compile on the host, so expert analysis of compile
+# failures must use host headers — not chroot headers from prior convergence.
+_HOST_INCLUDE_CANDIDATES: list[str] = [
+    "/usr/include",
+    "/usr/include/x86_64-linux-gnu",
+]
+
+
+def _stage_include_roots() -> list[str]:
+    """Return host include paths that actually exist on this system.
+
+    Used by the expert compat rule to confirm whether a missing symbol is
+    genuinely absent from the installed headers the compiler can see.
+    Only paths that exist are returned; missing directories are silently
+    skipped so the rule degrades gracefully on non-standard layouts.
+    """
+    return [p for p in _HOST_INCLUDE_CANDIDATES if Path(p).is_dir()]
+
 
 
 def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
@@ -82,8 +104,9 @@ def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
         success = False
         failure_step = "meson setup"
 
+    compile_output = ""
     if success:
-        ok, _ = run_logged(
+        ok, compile_output = run_logged(
             ["meson", "compile", "-C", str(build_dir)],
             log_file=log_file,
             env=clean,
@@ -114,6 +137,17 @@ def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
     }
     if failure_step is not None:
         result["failure_step"] = failure_step
+
+    # Run expert rules when compile failed and we have output to evaluate.
+    # stage() compiles on the host, so use host include roots regardless of
+    # whether a .orthos/chroot/ directory exists from prior convergence work.
+    expert_verdicts: list[dict] = []
+    if failure_step == "meson compile" and compile_output:
+        verdicts = evaluate_compile_failure(compile_output, _stage_include_roots())
+        expert_verdicts = [v.as_dict() for v in verdicts]
+
+    if expert_verdicts:
+        result["expert_verdicts"] = expert_verdicts
 
     write_json(orthos / _RESULT_FILE, result)
     return (0 if success else 1), result

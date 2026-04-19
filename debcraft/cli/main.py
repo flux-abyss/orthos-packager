@@ -184,6 +184,12 @@ def _cmd_stage(repo_path: str) -> int:
         error(f"staging failed at: {step}")
         error(f"see log: {result['log_file']}")
 
+        for verdict in result.get("expert_verdicts", []):
+            info(f"expert:  [{verdict['rule_id']}] "
+                 f"confidence={verdict['confidence']:.0%}")
+            info(f"         {verdict['summary']}")
+            info(f"         action: {verdict['suggested_action']}")
+
     return rc
 
 
