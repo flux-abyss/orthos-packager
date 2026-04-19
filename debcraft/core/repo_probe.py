@@ -50,6 +50,33 @@ def _git_version(repo: "Path") -> str | None:
     return tag.lstrip("v") if tag else None
 
 
+def _apt_candidate_version(package: str) -> str | None:
+    """Return the apt candidate version for *package* on the host, or None.
+
+    Best-effort: silently returns None if apt-cache is unavailable or the
+    package is not known to the host's configured sources. Used by probe()
+    to establish the distro source anchor before any compatibility reasoning.
+    """
+    try:
+        result = subprocess.run(
+            ["apt-cache", "policy", package],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Candidate:"):
+            candidate = stripped.split(":", 1)[1].strip()
+            return candidate if candidate not in ("", "(none)") else None
+    return None
+
+
 def probe(repo_path: str) -> dict:
     """Probe *repo_path* and return a metadata dict.
 
@@ -79,8 +106,22 @@ def probe(repo_path: str) -> dict:
         version = _git_version(path)
         version_source = "git-tag" if version else "fallback"
 
+    # Query the host apt sources for the candidate version of this project.
+    # This is best-effort: returns None if the package name is unknown or
+    # apt-cache is not available. The result anchors the distro recommendation
+    # before any compatibility reasoning runs.
+    distro_candidate: dict | None = None
+    if name:
+        candidate_ver = _apt_candidate_version(name)
+        if candidate_ver:
+            distro_candidate = {
+                "package": name,
+                "candidate_version": candidate_ver,
+            }
+
     return {
         "debian_dir": has_debian,
+        "distro_candidate": distro_candidate,
         "meson": True,
         "project_name": name,
         "repo_path": str(path),

@@ -265,6 +265,24 @@ def _internal_pkg_query_exists(root: Path, package: str) -> bool:
     return False
 
 
+def _internal_pkg_candidate_version(root: Path, package: str) -> str | None:
+    """Return the apt candidate version string for *package* inside *root*, or None."""
+    result = subprocess.run(
+        ["chroot", str(root), "apt-cache", "policy", package],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Candidate:"):
+            candidate = stripped.split(":", 1)[1].strip()
+            return candidate if candidate not in ("", "(none)") else None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Operation implementations
 # ---------------------------------------------------------------------------
@@ -537,6 +555,15 @@ def _op_pkg_query_exists(args: dict) -> None:
     _ok(exists)
 
 
+def _op_pkg_candidate_version(args: dict) -> None:
+    """Return the apt candidate version for *package* inside *root*, or None."""
+    root = _validate_chroot_root(Path(args["root"]))
+    package = str(args["package"])
+
+    version = _internal_pkg_candidate_version(root, package)
+    _ok(version)
+
+
 def _op_dpkg_search_path(args: dict) -> None:
     root = _validate_chroot_root(Path(args["root"]))
     pattern = str(args["pattern"])
@@ -707,6 +734,52 @@ def _op_pkgconfig_file_search(args: dict) -> None:
     _ok(chosen)
 
 
+def _op_pkg_query_version(args: dict) -> None:
+    """Return the installed version of *package* inside *root* via dpkg-query.
+
+    Returns the version string, or None if the package is not installed.
+    """
+    root = _validate_chroot_root(Path(args["root"]))
+    package = str(args["package"])
+
+    result = subprocess.run(
+        [
+            "chroot", str(root),
+            "dpkg-query", "-W", "-f=${Version}", package,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        _ok(None)
+        return
+    _ok(result.stdout.strip())
+
+
+def _op_pkgconfig_modversion(args: dict) -> None:
+    """Return the pkg-config modversion for *module* inside *root*.
+
+    Returns the version string, or None if the module is not found.
+    """
+    root = _validate_chroot_root(Path(args["root"]))
+    module = str(args["module"])
+
+    result = subprocess.run(
+        [
+            "chroot", str(root),
+            "pkg-config", "--modversion", module,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        _ok(None)
+        return
+    _ok(result.stdout.strip())
+
+
 def _op_destroy_chroot(args: dict) -> None:
     root = _validate_destroy_root(Path(args["root"]))
 
@@ -776,18 +849,21 @@ def _op_reset_chroot(args: dict) -> None:
 # ---------------------------------------------------------------------------
 
 _OPERATIONS: dict = {
-    "create-chroot":         _op_create_chroot,
-    "setup-mounts":          _op_setup_mounts,
-    "teardown-mounts":       _op_teardown_mounts,
-    "apt-install-in-chroot": _op_apt_install_in_chroot,
-    "chroot-exec":           _op_chroot_exec,
-    "pkg-query-installed":   _op_pkg_query_installed,
-    "pkg-query-exists":      _op_pkg_query_exists,
-    "dpkg-search-path":      _op_dpkg_search_path,
-    "apt-search-dev":        _op_apt_search_dev,
-    "pkgconfig-file-search": _op_pkgconfig_file_search,
-    "destroy-chroot":        _op_destroy_chroot,
-    "reset-chroot":          _op_reset_chroot,
+    "create-chroot":           _op_create_chroot,
+    "setup-mounts":            _op_setup_mounts,
+    "teardown-mounts":         _op_teardown_mounts,
+    "apt-install-in-chroot":   _op_apt_install_in_chroot,
+    "chroot-exec":             _op_chroot_exec,
+    "pkg-query-installed":     _op_pkg_query_installed,
+    "pkg-query-exists":        _op_pkg_query_exists,
+    "pkg-candidate-version":   _op_pkg_candidate_version,
+    "pkg-query-version":       _op_pkg_query_version,
+    "dpkg-search-path":        _op_dpkg_search_path,
+    "apt-search-dev":          _op_apt_search_dev,
+    "pkgconfig-file-search":   _op_pkgconfig_file_search,
+    "pkgconfig-modversion":    _op_pkgconfig_modversion,
+    "destroy-chroot":          _op_destroy_chroot,
+    "reset-chroot":            _op_reset_chroot,
 }
 
 

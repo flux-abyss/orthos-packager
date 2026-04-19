@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 
 from debcraft.expert.models import ExpertVerdict
@@ -132,6 +133,181 @@ def _symbol_in_headers(symbol: str, include_roots: list[str]) -> bool:
                 if symbol in text:
                     return True
     return False
+
+
+def _find_header_for_symbol(
+    symbol: str,
+    include_roots: list[str],
+) -> str | None:
+    """Return the path of the first .h file in *include_roots* that contains
+    *symbol* as a literal string, or None if not found.
+
+    Complements _symbol_in_headers: same walk, same text search, but
+    returns the path instead of a bool so the caller can resolve ownership.
+    """
+    for root_str in include_roots:
+        root = Path(root_str)
+        if not root.is_dir():
+            continue
+        for dirpath, _dirs, filenames in os.walk(root):
+            for fname in filenames:
+                if not fname.endswith(".h"):
+                    continue
+                fpath = Path(dirpath) / fname
+                try:
+                    text = fpath.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if symbol in text:
+                    return str(fpath)
+    return None
+
+
+def _find_header_by_keyword(
+    keyword: str,
+    include_roots: list[str],
+) -> str | None:
+    """Return the first .h file path whose path contains *keyword* (case-insensitive).
+
+    Also tries *keyword* with underscores replaced by hyphens, since many C
+    libraries (e.g. EFL) use hyphenated directory names (``ecore-x-1/``) while
+    their symbols use underscores (``ecore_x_...``).
+
+    Single-keyword primitive. Callers that need specificity should call this
+    repeatedly with decreasing-specificity keywords and take the first result.
+    """
+    kw = keyword.lower()
+    kw_hyph = kw.replace("_", "-")
+    candidates = {kw, kw_hyph}
+
+    for root_str in include_roots:
+        root = Path(root_str)
+        if not root.is_dir():
+            continue
+        for dirpath, _dirs, filenames in os.walk(root):
+            dir_lower = dirpath.lower()
+            files_lower = "\n".join(filenames).lower()
+            if not any(c in dir_lower or c in files_lower for c in candidates):
+                continue
+            for fname in filenames:
+                if not fname.endswith(".h"):
+                    continue
+                fname_lower = fname.lower()
+                if any(c in dir_lower or c in fname_lower for c in candidates):
+                    return str(Path(dirpath) / fname)
+    return None
+
+
+def _descending_prefixes(symbol: str, min_len: int = 3) -> list[str]:
+    """Return underscore-joined left-to-right prefixes of *symbol*, longest first.
+
+    Only prefixes whose total assembled length is at least *min_len* characters
+    are included (avoids matching on trivially short tokens like 'e' or 'x').
+
+    Examples
+    --------
+    >>> _descending_prefixes('ecore_x_io_error_display_still_there_get')
+    ['ecore_x_io_error_display_still_there', ..., 'ecore_x', 'ecore']
+
+    >>> _descending_prefixes('evas_object_event_rects_set')
+    ['evas_object_event_rects', 'evas_object_event', 'evas_object', 'evas']
+    """
+    parts = symbol.split("_")
+    prefixes: list[str] = []
+    for i in range(len(parts) - 1, 0, -1):   # longest slice first
+        prefix = "_".join(parts[:i])
+        if len(prefix) >= min_len:
+            prefixes.append(prefix)
+    return prefixes
+
+
+def _dpkg_s_host(header_path: str) -> str | None:
+    """Resolve the Debian package owning *header_path* via host dpkg -S.
+
+    Returns a normalised package name, or None. Used when no runner is
+    available (standalone stage, host mode).
+    """
+    try:
+        result = subprocess.run(
+            ["dpkg", "-S", header_path],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    line = result.stdout.strip().splitlines()[0]
+    if ":" in line:
+        pkg = line.split(":")[0].strip()
+        return pkg.lower() if pkg else None
+    return None
+
+
+def infer_symbol_provider(
+    symbol: str,
+    include_roots: list[str],
+    runner: object = None,
+) -> dict | None:
+    """Infer the Debian package that provides the header defining *symbol*.
+
+    Strategy
+    --------
+    1. Search include_roots for a header that **contains** *symbol* literally.
+       This covers the case where an older version of the header is installed
+       (the symbol exists somewhere in the file even if the exact API variant
+       differs).
+    2. If not found (symbol is entirely new to this distro version), extract
+       the library keyword from the symbol name (first underscore-separated
+       component) and find any header whose *path* contains that keyword.
+       The installed header file exists even if it lacks the new symbol.
+    3. Resolve the owning package:
+       - If *runner* has a ``dpkg_search_path`` method, delegate to it.
+       - Otherwise call dpkg -S directly on the host.
+    4. Return a dict {symbol, header, package} or None if resolution fails.
+
+    Parameters
+    ----------
+    symbol:
+        The missing symbol name extracted from compiler output.
+    include_roots:
+        Filesystem paths to search (host or chroot /usr/include, etc.).
+    runner:
+        Optional RunnerProtocol instance. Passed as ``object`` to avoid a
+        circular import; duck-typed at call time.
+    """
+    # Step 1: find a header that literally contains the symbol.
+    header_path = _find_header_for_symbol(symbol, include_roots)
+
+    # Step 2: fallback — try descending-specificity underscore prefixes so we
+    # match the most relevant header path rather than the first alphabetical hit.
+    # e.g. ecore_x_io_... tries 'ecore_x' before falling back to 'ecore'.
+    if header_path is None:
+        for prefix in _descending_prefixes(symbol):
+            header_path = _find_header_by_keyword(prefix, include_roots)
+            if header_path is not None:
+                break
+
+    if header_path is None:
+        return None
+
+    # Step 3: resolve package owner.
+    package: str | None = None
+    if runner is not None and hasattr(runner, "dpkg_search_path"):
+        package = runner.dpkg_search_path(header_path)  # type: ignore[union-attr]
+    if package is None:
+        package = _dpkg_s_host(header_path)
+
+    if package is None:
+        return None
+
+    return {
+        "symbol": symbol,
+        "header": header_path,
+        "package": package,
+    }
 
 
 def evaluate_compile_failure(

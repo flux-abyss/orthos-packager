@@ -135,6 +135,35 @@ class RunnerProtocol(Protocol):
         """
         ...
 
+    def pkg_query_version(self, package: str) -> str | None:
+        """Return the installed version of *package* in this runner's environment.
+
+        Uses dpkg-query -W. Returns None if the package is not installed.
+        In chroot mode this queries inside the chroot; in host mode it queries
+        the host. Used for target-version inspection during compatibility search.
+        """
+        ...
+
+    def pkgconfig_modversion(self, module: str) -> str | None:
+        """Return the pkg-config modversion for *module* in this environment.
+
+        Returns None if the module is not available. In chroot mode this
+        queries inside the chroot; in host mode it queries the host.
+        Used for target-version inspection during compatibility search.
+        """
+        ...
+
+    def pkg_candidate_version(self, package: str) -> str | None:
+        """Return the apt candidate version of *package* in this environment.
+
+        Uses apt-cache policy. Returns None if the package is unknown or has
+        no candidate (e.g. not in any configured source).
+        In chroot mode this queries the chroot's sources; in host mode it
+        queries the host. Used to establish the distro source anchor before
+        compatibility archaeology.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # HostRunner
@@ -264,6 +293,59 @@ class HostRunner:
         """
         return None
 
+    def pkg_query_version(self, package: str) -> str | None:
+        """Return the installed version of *package* on the host via dpkg-query."""
+        try:
+            result = subprocess.run(
+                ["dpkg-query", "-W", "-f=${Version}", package],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return result.stdout.strip()
+
+    def pkgconfig_modversion(self, module: str) -> str | None:
+        """Return the pkg-config modversion for *module* on the host."""
+        try:
+            result = subprocess.run(
+                ["pkg-config", "--modversion", module],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return result.stdout.strip()
+
+    def pkg_candidate_version(self, package: str) -> str | None:
+        """Return the apt candidate version of *package* on the host."""
+        try:
+            result = subprocess.run(
+                ["apt-cache", "policy", package],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Candidate:"):
+                candidate = stripped.split(":", 1)[1].strip()
+                return candidate if candidate not in ("", "(none)") else None
+        return None
+
 
 # ---------------------------------------------------------------------------
 # ChrootRunner
@@ -370,5 +452,26 @@ class ChrootRunner:
         """
         try:
             return client.pkgconfig_file_search(self._chroot_root, name)
+        except PrivilegedHelperError:
+            return None
+
+    def pkg_query_version(self, package: str) -> str | None:
+        """Return the installed version of *package* inside the chroot, or None."""
+        try:
+            return client.pkg_query_version(self._chroot_root, package)
+        except PrivilegedHelperError:
+            return None
+
+    def pkgconfig_modversion(self, module: str) -> str | None:
+        """Return the pkg-config modversion for *module* inside the chroot, or None."""
+        try:
+            return client.pkgconfig_modversion(self._chroot_root, module)
+        except PrivilegedHelperError:
+            return None
+
+    def pkg_candidate_version(self, package: str) -> str | None:
+        """Return the apt candidate version of *package* inside the chroot, or None."""
+        try:
+            return client.pkg_candidate_version(self._chroot_root, package)
         except PrivilegedHelperError:
             return None

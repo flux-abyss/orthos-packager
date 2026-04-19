@@ -1,13 +1,17 @@
 """Meson staging backend: setup -> compile -> install into a DESTDIR."""
 
 import os
+import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from debcraft.expert.compat import evaluate_compile_failure
+from debcraft.expert.compat import evaluate_compile_failure, infer_symbol_provider
 from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.shell import run_logged
+
+if TYPE_CHECKING:
+    from debcraft.discovery.runner import RunnerProtocol
 
 _RESULT_FILE = "stage-result.json"
 StageResult = dict[str, Any]
@@ -72,7 +76,60 @@ def _next_step_strategy(verdicts: list[dict]) -> dict | None:
     return None
 
 
-def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
+def _infer_provider_from_verdicts(
+    verdicts: list[dict],
+    include_roots: list[str],
+    runner: object,
+) -> dict | None:
+    """Extract absent symbol names from verdicts and infer a provider package.
+
+    Scans the evidence lines of any ``source_too_new_for_target_api`` verdict
+    for the first absent symbol, then delegates to infer_symbol_provider.
+    Returns the first successful provider dict, or None.
+    """
+    # Pull the first C identifier from a compiler diagnostic line.
+    _sym_pat = re.compile(r"""['"‘’“”]([A-Za-z_][A-Za-z0-9_]*)['"‘’“”]""")
+
+    for verdict in verdicts:
+        if verdict.get("rule_id") != "source_too_new_for_target_api":
+            continue
+        for evidence_line in verdict.get("evidence", []):
+            m = _sym_pat.search(evidence_line)
+            if not m:
+                continue
+            symbol = m.group(1)
+            provider = infer_symbol_provider(symbol, include_roots, runner=runner)
+            if provider:
+                return provider
+    return None
+
+
+def _query_target_version(
+    runner: "RunnerProtocol",
+    package: str,
+    pkgconfig_module: str,
+) -> dict | None:
+    """Query the target environment for installed version data.
+
+    Returns a dict suitable for inclusion as ``target_version_info`` in the
+    stage result, or None if neither query returns useful data.
+
+    Both queries are best-effort and silently return None on failure so that
+    a missing or misconfigured environment does not abort analysis.
+    """
+    pkg_ver = runner.pkg_query_version(package)
+    pc_ver = runner.pkgconfig_modversion(pkgconfig_module)
+    if pkg_ver is None and pc_ver is None:
+        return None
+    return {
+        "package": package,
+        "package_version": pkg_ver,
+        "pkgconfig_module": pkgconfig_module,
+        "pkgconfig_version": pc_ver,
+    }
+
+
+def stage(meta: dict[str, Any], runner: "RunnerProtocol | None" = None) -> tuple[int, StageResult]:
     """Run the full Meson staging flow for the repo described by *meta*.
 
     Directories created under <repo>/.orthos/:
@@ -169,6 +226,45 @@ def stage(meta: dict[str, Any]) -> tuple[int, StageResult]:
         strategy = _next_step_strategy(expert_verdicts)
         if strategy:
             result.update(strategy)
+            # When switching to compatibility search, report what the target
+            # environment actually has installed.  HostRunner is imported here
+            # (not at module level) because runner.py imports _clean_env from
+            # this module, which would create a circular import at load time.
+            from debcraft.discovery.runner import HostRunner  # noqa: PLC0415
+            active_runner: "RunnerProtocol" = runner if runner is not None else HostRunner()
+
+            # Infer provider from the first absent symbol in the verdict.
+            # The verdict evidence lines are raw compiler log lines; we need
+            # the symbol names, which are stored in the verdict summary.
+            # Use the absent symbols captured during this call instead.
+            provider = _infer_provider_from_verdicts(
+                expert_verdicts, _stage_include_roots(), active_runner
+            )
+
+            if provider:
+                package = provider["package"]
+                # Derive a pkg-config module name from the package name:
+                # strip the leading 'lib' and trailing '-dev' if present.
+                pc_module = package
+                if pc_module.startswith("lib"):
+                    pc_module = pc_module[3:]
+                if pc_module.endswith("-dev"):
+                    pc_module = pc_module[:-4]
+                result["symbol_provider"] = provider
+            else:
+                # No provider inferred — skip version reporting rather than
+                # guessing a hardcoded package name.
+                package = ""
+                pc_module = ""
+
+            if package:
+                version_info = _query_target_version(
+                    active_runner,
+                    package=package,
+                    pkgconfig_module=pc_module,
+                )
+                if version_info:
+                    result["target_version_info"] = version_info
 
     write_json(orthos / _RESULT_FILE, result)
     return (0 if success else 1), result

@@ -18,9 +18,11 @@ Public API:
     chroot_exec(root, cmd) -> tuple[bool, str]
     pkg_query_installed(root, package) -> bool
     pkg_query_exists(root, package) -> bool
+    pkg_query_version(root, package) -> str | None
     dpkg_search_path(root, pattern) -> str | None
     apt_search_dev(root, meson_name) -> str | None
     pkgconfig_file_search(root, name) -> str | None
+    pkgconfig_modversion(root, module) -> str | None
     destroy_chroot(root)
     reset_chroot(root)
 """
@@ -40,9 +42,12 @@ __all__ = [
     "chroot_exec",
     "pkg_query_installed",
     "pkg_query_exists",
+    "pkg_candidate_version",
+    "pkg_query_version",
     "dpkg_search_path",
     "apt_search_dev",
     "pkgconfig_file_search",
+    "pkgconfig_modversion",
     "destroy_chroot",
     "reset_chroot",
 ]
@@ -154,6 +159,26 @@ def pkg_query_exists(root: Path, package: str) -> bool:
     return bool(result.get("result", False))
 
 
+def pkg_query_version(root: Path, package: str) -> str | None:
+    """Return the installed version of *package* inside *root*, or None."""
+    result = invoke("pkg-query-version", {
+        "root": str(root),
+        "package": package,
+    })
+    val = result.get("result")
+    return str(val) if val else None
+
+
+def pkg_candidate_version(root: Path, package: str) -> str | None:
+    """Return the apt candidate version of *package* inside *root*, or None."""
+    result = invoke("pkg-candidate-version", {
+        "root": str(root),
+        "package": package,
+    })
+    val = result.get("result")
+    return str(val) if val else None
+
+
 def dpkg_search_path(root: Path, pattern: str) -> str | None:
     """Return the package owning *pattern* via dpkg -S inside *root*, or None."""
     result = invoke("dpkg-search-path", {
@@ -188,6 +213,16 @@ def pkgconfig_file_search(root: Path, name: str) -> str | None:
     result = invoke("pkgconfig-file-search", {
         "root": str(root),
         "name": name,
+    })
+    val = result.get("result")
+    return str(val) if val else None
+
+
+def pkgconfig_modversion(root: Path, module: str) -> str | None:
+    """Return the pkg-config modversion for *module* inside *root*, or None."""
+    result = invoke("pkgconfig-modversion", {
+        "root": str(root),
+        "module": module,
     })
     val = result.get("result")
     return str(val) if val else None
