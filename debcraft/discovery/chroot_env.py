@@ -82,7 +82,7 @@ class ChrootEnv:
       The chroot is considered valid when <chroot_root>/bin/bash exists.
       Packages installed by previous convergence runs accumulate across runs
       (the chroot behaves like a real system between smoke invocations).
-      To reset: run ``orthos-packager reset-chroot <repo>`` or pass
+      To reset: run 'orthos-packager reset-chroot <repo>' or pass
       refresh=True to ensure_ready().
 
     Disk cost:

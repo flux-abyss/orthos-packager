@@ -83,7 +83,7 @@ def _infer_provider_from_verdicts(
 ) -> dict | None:
     """Extract absent symbol names from verdicts and infer a provider package.
 
-    Scans the evidence lines of any ``source_too_new_for_target_api`` verdict
+    Scans the evidence lines of any 'source_too_new_for_target_api' verdict
     for the first absent symbol, then delegates to infer_symbol_provider.
     Returns the first successful provider dict, or None.
     """
@@ -111,7 +111,7 @@ def _query_target_version(
 ) -> dict | None:
     """Query the target environment for installed version data.
 
-    Returns a dict suitable for inclusion as ``target_version_info`` in the
+    Returns a dict suitable for inclusion as 'target_version_info' in the
     stage result, or None if neither query returns useful data.
 
     Both queries are best-effort and silently return None on failure so that

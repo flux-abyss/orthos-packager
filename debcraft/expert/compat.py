@@ -170,8 +170,8 @@ def _find_header_by_keyword(
     """Return the first .h file path whose path contains *keyword* (case-insensitive).
 
     Also tries *keyword* with underscores replaced by hyphens, since many C
-    libraries (e.g. EFL) use hyphenated directory names (``ecore-x-1/``) while
-    their symbols use underscores (``ecore_x_...``).
+    libraries (e.g. EFL) use hyphenated directory names ('ecore-x-1/') while
+    their symbols use underscores ('ecore_x_...').
 
     Single-keyword primitive. Callers that need specificity should call this
     repeatedly with decreasing-specificity keywords and take the first result.
@@ -264,7 +264,7 @@ def infer_symbol_provider(
        component) and find any header whose *path* contains that keyword.
        The installed header file exists even if it lacks the new symbol.
     3. Resolve the owning package:
-       - If *runner* has a ``dpkg_search_path`` method, delegate to it.
+       - If *runner* has a 'dpkg_search_path' method, delegate to it.
        - Otherwise call dpkg -S directly on the host.
     4. Return a dict {symbol, header, package} or None if resolution fails.
 
@@ -275,7 +275,7 @@ def infer_symbol_provider(
     include_roots:
         Filesystem paths to search (host or chroot /usr/include, etc.).
     runner:
-        Optional RunnerProtocol instance. Passed as ``object`` to avoid a
+        Optional RunnerProtocol instance. Passed as 'object' to avoid a
         circular import; duck-typed at call time.
     """
     # Step 1: find a header that literally contains the symbol.

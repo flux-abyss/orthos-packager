@@ -40,7 +40,8 @@ class DependencyReport:
     cli_commands: set[str] = field(default_factory=set)
     reasons: dict[str, list[str]] = field(default_factory=dict)
     # provenance[pkg] = source label: "python-import", "gi-namespace",
-    # "subprocess", "elf-ldd", or "fallback".
+    # "subprocess", "elf-dynamic", "script-command", or "fallback".
+    # "elf-dynamic" means visible dynamic linkage via ldd (not static).
     provenance: dict[str, str] = field(default_factory=dict)
 
     def sorted_depends(self) -> list[str]:
@@ -315,6 +316,10 @@ def _dpkg_owner(lib_path: str) -> str | None:
 def _scan_elf_tree(stage_dir: Path, report: DependencyReport) -> None:
     """Walk *stage_dir*, run ldd on every ELF file, map libs to packages.
 
+    Only dynamic (shared-object) linkage visible in ldd output is recorded.
+    Statically linked code produces no ldd output and therefore generates
+    no elf-dynamic provenance entries — this is intentional.
+
     Packages already recorded for any other ELF in this tree are not
     re-added; reasons accumulate but the depends set stays deduplicated.
     """
@@ -331,6 +336,6 @@ def _scan_elf_tree(stage_dir: Path, report: DependencyReport) -> None:
             if not pkg or pkg in _ELF_SKIP_PACKAGES:
                 continue
             lib_name = Path(lib_path).name
-            reason = f"elf ldd: {installed} -> {lib_name}"
+            reason = f"elf-dynamic: {installed} -> {lib_name}"
             report.depends.add(pkg)
-            _record_reason(report, pkg, reason, provenance="elf-ldd")
+            _record_reason(report, pkg, reason, provenance="elf-dynamic")

@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from debcraft.build_deps import BODHI_BUILD_DEP_MAP, scan_meson_dependencies
-from debcraft.deps import infer_dependencies
+from debcraft.deps import _record_reason, infer_dependencies
+from debcraft.generator.inter_pkg import (
+    dev_pkg_main_dep,
+    script_command_deps,
+    synthesize_intra_deps,
+)
+from debcraft.generator.pkg_validator import validate_packages
 from debcraft.paths import orthos_dir
 from debcraft.utils.fs import ensure_dir, write_json
 from debcraft.utils.log import info
@@ -107,8 +113,8 @@ def _should_collapse(non_empty: list[dict[str, Any]]) -> bool:
     """Return True when all non-empty buckets can be merged into one package.
 
     Collapse when the only non-empty buckets are the executable-bearing
-    bucket and/or the data bucket - no shared libs, dev headers, plugins,
-    doc, or other content that would justify a separate package.
+    bucket and/or the data bucket - no shared libs, dev headers, doc,
+    or other content that would justify a separate package.
     """
     names = {b["name"] for b in non_empty}
     return names <= {_BIN_BUCKET, "data"}
@@ -201,7 +207,9 @@ def _gen_build_depends(repo: Path) -> tuple[str, str]:
 
 # Provenance labels that indicate dh_shlibdeps handles the dep better than
 # an explicit Depends entry.  We emit these only via ${shlibs:Depends}.
-_SHLIBS_HANDLED_PROVENANCES = {"elf-ldd", "inferred"}
+# "elf-dynamic" = visible dynamic linkage discovered by ldd.
+# Static linkage never reaches this set (ldd produces no output for it).
+_SHLIBS_HANDLED_PROVENANCES = {"elf-dynamic", "inferred"}
 
 
 def _non_elf_runtime_deps(dep_report: Any) -> list[str]:
@@ -231,10 +239,28 @@ def _runtime_dep_state(
     )
 
     inferred_deps = dep_report.sorted_depends()
-    dep_summary = ", ".join(inferred_deps) if inferred_deps else "(none)"
-    info(f"inferred depends: {dep_summary}")
+
+    # Split inferred deps by provenance for clear logging.
+    elf_dynamic_deps = [
+        pkg for pkg in inferred_deps
+        if dep_report.provenance.get(pkg) == "elf-dynamic"
+    ]
+    explicit_deps = [
+        pkg for pkg in inferred_deps
+        if dep_report.provenance.get(pkg) not in _SHLIBS_HANDLED_PROVENANCES
+    ]
+
+    if elf_dynamic_deps:
+        info("dynamic ELF deps (shlibs-handled): "
+             + ", ".join(elf_dynamic_deps))
+    if explicit_deps:
+        info("explicit non-ELF deps: " + ", ".join(explicit_deps))
+    if not inferred_deps:
+        info("inferred depends: (none)")
+
     for pkg, pkg_reasons in dep_report.sorted_reasons():
-        info(f"  inferred reason: {pkg} <- {'; '.join(pkg_reasons)}")
+        prov = dep_report.provenance.get(pkg, "inferred")
+        info(f"  dep: {pkg} [{prov}] <- {'; '.join(pkg_reasons)}")
 
     non_elf_deps = _non_elf_runtime_deps(dep_report)
     non_emitted_runtime_deps = [
@@ -242,9 +268,9 @@ def _runtime_dep_state(
     ]
 
     if non_elf_deps:
-        info(f"emitting non-ELF runtime deps: {', '.join(non_elf_deps)}")
+        info(f"emitting explicit runtime deps: {', '.join(non_elf_deps)}")
     if non_emitted_runtime_deps:
-        info("skipping non-emitted runtime deps: "
+        info("leaving to shlibs: "
              f"{', '.join(non_emitted_runtime_deps)}")
 
     return dep_report, non_elf_deps, non_emitted_runtime_deps
@@ -264,7 +290,6 @@ _BUCKET_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "data": ("{app} data", "Shared data files for {app}."),
     "dev": ("{app} development files", "Development files for {app}."),
     "doc": ("{app} documentation", "Documentation for {app}."),
-    "plugins": ("{app} plugins", "Plugin files for {app}."),
     "runtime": ("{app} runtime libraries", "Shared libraries for {app}."),
 }
 
@@ -291,7 +316,7 @@ def _pkg_descriptions(
     return short, long_
 
 
-# pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+# pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
 def _build_package_layout(
     app_name: str,
     non_empty: list[dict[str, Any]],
@@ -299,6 +324,8 @@ def _build_package_layout(
     collapse: bool,
     non_elf_deps: list[str],
     meta: dict[str, Any],
+    stage_dir: Path | None = None,
+    dep_report: Any = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     """Return output package metadata and install manifests."""
     output_packages: list[dict[str, Any]] = []
@@ -308,20 +335,30 @@ def _build_package_layout(
         all_files = _merged_files(non_empty)
         short_desc, long_desc = _pkg_descriptions(
             app_name, "", is_primary=True, meta_short=meta.get("description"))
+        cmd_deps = script_command_deps(stage_dir, all_files)
+        all_extra = list(non_elf_deps)
+        for pkg, reason in cmd_deps:
+            if pkg not in all_extra:
+                all_extra.append(pkg)
+            if dep_report is not None:
+                dep_report.depends.add(pkg)
+                _record_reason(dep_report, pkg, reason,
+                               provenance="script-command")
         output_packages.append({
             "name": app_name,
             "short_desc": short_desc,
             "long_desc": long_desc,
             "buckets": [],
-            "extra_depends": list(non_elf_deps),
+            "extra_depends": all_extra,
         })
         install_manifests[app_name] = _coalesce_to_dirs(all_files, app_name)
         return output_packages, install_manifests
 
-    data_companion: str | None = None
-    for bucket in non_empty:
-        if bucket["name"] == "data" and bucket["name"] != primary:
-            data_companion = _pkg_name(app_name, "data", primary)
+    # Compute intra-package deps (main pulls data, plugins, applicable other).
+    intra_deps = synthesize_intra_deps(app_name, non_empty, primary)
+    if intra_deps:
+        info("intra-package deps: " +
+             "; ".join(f"{k} -> {v}" for k, v in sorted(intra_deps.items())))
 
     runtime_pkg: str | None = None
     for bucket in non_empty:
@@ -336,20 +373,42 @@ def _build_package_layout(
         bname = bucket["name"]
         pname = _pkg_name(app_name, bname, primary)
         is_primary = bname == primary
+        is_dev = bname == "dev"
         extra: list[str] = []
 
-        if is_primary and data_companion:
-            extra.append(data_companion)
-        if bname == "dev" and runtime_pkg:
-            extra.append(runtime_pkg)
-        # plugins package also depends on the runtime package: plugins are
-        # useless without the shared libraries they extend.
-        if bname == "plugins" and runtime_pkg:
-            extra.append(runtime_pkg)
+        # --- intra-package deps synthesized above ---
+        for dep in intra_deps.get(pname, []):
+            if dep not in extra:
+                extra.append(dep)
+
+        # -dev always depends on the main package at the same binary version.
+        # It does NOT receive generic ELF runtime deps; shlibs are skipped
+        # in _gen_control for dev packages.
+        if is_dev:
+            main_dep = dev_pkg_main_dep(app_name)
+            if main_dep not in extra:
+                extra.insert(0, main_dep)
+            # Also depend on runtime shlib package when present.
+            if runtime_pkg and runtime_pkg not in extra:
+                extra.append(runtime_pkg)
+
+        # Non-ELF runtime deps go to the primary package only (not -dev).
         if is_primary:
             for dep in non_elf_deps:
                 if dep not in extra:
                     extra.append(dep)
+
+        # Script command deps for this specific package's files.
+        # Provenance is recorded immediately into dep_report at detection time.
+        cmd_deps = script_command_deps(stage_dir, bucket.get("files", []))
+        for pkg, reason in cmd_deps:
+            if pkg not in extra:
+                extra.append(pkg)
+                info(f"  script-cmd dep: {pname} -> {pkg}")
+            if dep_report is not None:
+                dep_report.depends.add(pkg)
+                _record_reason(dep_report, pkg, reason,
+                               provenance="script-command")
 
         short_desc, long_desc = _pkg_descriptions(
             app_name,
@@ -363,6 +422,7 @@ def _build_package_layout(
             "long_desc": long_desc,
             "buckets": [bname],
             "extra_depends": extra,
+            "is_dev": is_dev,
         })
         install_manifests[pname] = _coalesce_to_dirs(bucket["files"], app_name,
                                                      all_staged)
@@ -388,9 +448,16 @@ def _gen_control(
     ]
 
     for pkg in packages:
-        depends_parts = ["${shlibs:Depends}", "${misc:Depends}"]
-        depends_parts.extend(pkg.get("extra_depends", []))
         arch = _pkg_arch(pkg)
+        # ${shlibs:Depends} is only meaningful for arch-specific packages that
+        # contain ELF binaries processed by dh_shlibdeps.  Omit it for:
+        #   - Architecture: all  (no ELF content by definition)
+        #   - -dev packages      (headers/static libs; ELF deps come from main)
+        if arch == "all" or pkg.get("is_dev"):
+            depends_parts = ["${misc:Depends}"]
+        else:
+            depends_parts = ["${shlibs:Depends}", "${misc:Depends}"]
+        depends_parts.extend(pkg.get("extra_depends", []))
         short_desc = pkg.get("short_desc", pkg["name"])
         long_desc = pkg.get("long_desc", f"{app_name} package.")
 
@@ -446,6 +513,42 @@ def _gen_source_format() -> str:
 def _gen_install(files: list[str]) -> str:
     """Return the text of a .install file: one path per line."""
     return "\n".join(files) + "\n" if files else ""
+
+
+def _check_duplicate_ownership(
+    install_manifests: dict[str, list[str]],
+) -> None:
+    """Abort if any install path is claimed by more than one package.
+
+    Builds a mapping of *install glob/path* -> list[package names] and raises
+    ``RuntimeError`` if any entry is owned by more than one package.  This
+    prevents overlapping file ownership in the generated .deb packages.
+
+    Args:
+        install_manifests: Mapping of package name to its list of install
+            entries (paths or globs as produced by ``_coalesce_to_dirs``).
+
+    Raises:
+        RuntimeError: When one or more install entries appear in multiple
+            packages.  The error message lists every conflicting entry.
+    """
+    ownership: dict[str, list[str]] = {}  # entry -> [pkg, ...]
+    for pkg_name, entries in install_manifests.items():
+        for entry in entries:
+            ownership.setdefault(entry, []).append(pkg_name)
+
+    duplicates = {
+        entry: pkgs
+        for entry, pkgs in ownership.items()
+        if len(pkgs) > 1
+    }
+    if not duplicates:
+        return
+
+    lines = ["duplicate file ownership detected — aborting:"]
+    for entry, pkgs in sorted(duplicates.items()):
+        lines.append(f"  {entry!r} claimed by: {', '.join(sorted(pkgs))}")
+    raise RuntimeError("\n".join(lines))
 
 
 # Maps SPDX-ish identifiers (lowercase) to (Debian label, common-licenses path or None).
@@ -613,6 +716,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     info(f"build-depends source: {build_depends_source}")
 
     # Build package descriptors and install manifests from classified buckets.
+    _stage_dir = orthos / "stage"
     output_packages, install_manifests = _build_package_layout(
         app_name,
         non_empty,
@@ -620,7 +724,12 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         collapse,
         non_elf_deps,
         meta,
+        stage_dir=_stage_dir if _stage_dir.exists() else None,
+        dep_report=dep_report,
     )
+
+    # Validate generated package relationships before writing files.
+    validation = validate_packages(app_name, output_packages)
 
     # -- Write debian/ files ----------------------------------------------
 
@@ -640,6 +749,8 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     # Emit .install files only when multiple packages are generated.
     # Single-package builds rely on dh_auto_install directly.
     if not collapse:
+        # Guard: abort before writing any file if ownership conflicts exist.
+        _check_duplicate_ownership(install_manifests)
         for pkg_info in output_packages:
             pname = pkg_info["name"]
             write_text(debian_dir / f"{pname}.install",
@@ -666,6 +777,8 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         "plan_file": str(plan_file),
         "repo_path": str(repo),
         "version_source": version_source,
+        "inter_pkg_validation": validation["inter_pkg_validation"],
+        "dev_pkg_validation": validation["dev_pkg_validation"],
     }
 
     write_json(orthos / _RESULT_FILE, result)

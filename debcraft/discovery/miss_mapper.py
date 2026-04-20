@@ -256,7 +256,7 @@ def tool_dep_names() -> frozenset[str]:
     """Return the set of tool names in TOOL_DEP_MAP.
 
     Passed to classify_misses() so the classifier can route
-    ``found: NO`` dependency lines to tool-miss deterministically.
+    'found: NO' dependency lines to tool-miss deterministically.
     """
     return frozenset(TOOL_DEP_MAP.keys())
 

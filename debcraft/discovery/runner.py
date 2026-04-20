@@ -4,10 +4,10 @@ Defines the RunnerProtocol and two concrete implementations:
 
   HostRunner   — runs commands directly on the host. This is the pre-isolation
                  mode. Host package state affects outcomes. Invoked via
-                 ``debcraft smoke --host``.
+                 'debcraft smoke --host'.
 
   ChrootRunner — runs commands inside a prepared debootstrap chroot. This is
-                 the authoritative isolated mode and the default for ``smoke``.
+                 the authoritative isolated mode and the default for 'smoke'.
 
 Privilege model:
   ChrootRunner does not contain any direct sudo subprocess calls. All
@@ -176,7 +176,7 @@ class HostRunner:
     Host package state affects outcomes. The only environment sanitation
     applied is _clean_env() (strips active venv from PATH).
 
-    Use ``debcraft smoke --host`` to select this runner explicitly.
+    Use 'debcraft smoke --host' to select this runner explicitly.
     """
 
     mode: str = "host"

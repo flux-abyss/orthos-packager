@@ -26,9 +26,9 @@ class ExpertVerdict:
     ------
     rule_id:
         Stable identifier for the rule that produced this verdict.
-        Use snake_case. Example: ``source_too_new_for_target_api``.
+        Use snake_case. Example: 'source_too_new_for_target_api'.
     category:
-        Broad failure class. Currently: ``compatibility``, ``missing_dep``.
+        Broad failure class. Currently: 'compatibility', 'missing_dep'.
         Kept open-ended; new categories can be added without schema changes.
     confidence:
         Float in [0.0, 1.0]. Reflects how certain the rule is, given the

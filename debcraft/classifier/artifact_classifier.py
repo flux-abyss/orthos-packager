@@ -12,7 +12,7 @@ _PLAN_FILE = "package-plan.json"
 
 # Canonical bucket order for output.
 _BUCKET_ORDER: list[str] = [
-    "runtime", "dev", "bin", "doc", "data", "plugins", "other"
+    "runtime", "dev", "bin", "doc", "data", "other"
 ]
 
 # Maps inventory kind -> bucket name.
@@ -25,7 +25,6 @@ _KIND_TO_BUCKET: dict[str, str] = {
     "doc": "doc",
     "manpage": "doc",
     "data": "data",
-    "plugin": "plugins",
     "other": "other",
 }
 
@@ -43,7 +42,7 @@ def _load_inventory(inventory_file: Path) -> dict[str, Any]:
 
 
 def _group_into_buckets(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return a list of bucket dicts in canonical order, all seven always present."""
+    """Return a list of bucket dicts in canonical order, all six always present."""
     # Accumulate file paths per bucket.
     buckets: dict[str, list[str]] = {name: [] for name in _BUCKET_ORDER}
 

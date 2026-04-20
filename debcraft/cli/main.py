@@ -323,7 +323,33 @@ def _cmd_generate(repo_path: str) -> int:
     for pkg in result["binary_packages"]:
         info(f"  {pkg}")
     info(f"wrote:   {result['debian_dir']}")
+
+    _print_validation_summary(result)
     return rc
+
+
+def _print_validation_summary(result: dict[str, Any]) -> None:
+    """Print a concise inter-package and -dev validation summary."""
+    iv = result.get("inter_pkg_validation")
+    if iv:
+        present = iv.get("present_primary_depends", [])
+        missing = iv.get("missing_primary_depends", [])
+        present_str = ", ".join(
+            p.split("-", 1)[-1] for p in present) or "none"
+        missing_str = ", ".join(
+            p.split("-", 1)[-1] for p in missing) or "none"
+        info("inter-package validation:")
+        info(f"  primary depends ok: {present_str}")
+        info(f"  missing:            {missing_str}")
+
+    dv = result.get("dev_pkg_validation", [])
+    if dv:
+        info("dev package validation:")
+        for rec in dv:
+            lockstep = "ok" if rec["has_main_lockstep_dep"] else "MISSING"
+            leakage = "yes (WARN)" if rec["has_shlibs_dep"] else "no"
+            info(f"  {rec['package']} lockstep dep: {lockstep}")
+            info(f"  {rec['package']} shlibs leakage: {leakage}")
 
 
 def _cmd_apply(repo_path: str, force: bool = False) -> int:

@@ -111,9 +111,9 @@ def classify_misses(
     """Parse meson setup output and return a deduplicated list of DepMiss.
 
     *tool_dep_names* must be the set of names present in TOOL_DEP_MAP
-    (supplied by the caller from miss_mapper). When a ``found: NO``
+    (supplied by the caller from miss_mapper). When a 'found: NO'
     dependency line matches a name in this set, it is routed to
-    ``tool-miss`` instead of ``pkg-config-miss``. This routing is
+    'tool-miss' instead of 'pkg-config-miss'. This routing is
     deterministic: map membership is the signal. No inference is performed.
 
     Duplicate misses (same miss_type + name) are deduplicated; the first
