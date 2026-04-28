@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
 
 _BUILD_RESULT_FILE = "build-result.json"
 _LOG_FILE = "logs/build.log"

@@ -5,13 +5,13 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from debcraft.expert.compat import evaluate_compile_failure, infer_symbol_provider
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
-from debcraft.utils.shell import run_logged
+from deb.expert.compat import evaluate_compile_failure, infer_symbol_provider
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
+from deb.utils.shell import run_logged
 
 if TYPE_CHECKING:
-    from debcraft.discovery.runner import RunnerProtocol
+    from deb.discovery.runner import RunnerProtocol
 
 _RESULT_FILE = "stage-result.json"
 StageResult = dict[str, Any]
@@ -230,7 +230,7 @@ def stage(meta: dict[str, Any], runner: "RunnerProtocol | None" = None) -> tuple
             # environment actually has installed.  HostRunner is imported here
             # (not at module level) because runner.py imports _clean_env from
             # this module, which would create a circular import at load time.
-            from debcraft.discovery.runner import HostRunner  # noqa: PLC0415
+            from deb.discovery.runner import HostRunner  # noqa: PLC0415
             active_runner: "RunnerProtocol" = runner if runner is not None else HostRunner()
 
             # Infer provider from the first absent symbol in the verdict.

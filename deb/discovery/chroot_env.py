@@ -12,7 +12,7 @@ Separation of concerns:
 
 Privilege boundary:
   All root-required operations are delegated to the privileged helper via
-  debcraft.privileged.client. ChrootEnv contains no direct sudo subprocess
+  deb.privileged.client. ChrootEnv contains no direct sudo subprocess
   calls. The helper performs path validation and operation allowlisting.
 
 Mount lifecycle:
@@ -45,9 +45,9 @@ from __future__ import annotations
 import atexit
 from pathlib import Path
 
-from debcraft.privileged import client
-from debcraft.privileged.launcher import PrivilegedHelperError
-from debcraft.utils.log import info
+from deb.privileged import client
+from deb.privileged.launcher import PrivilegedHelperError
+from deb.utils.log import info
 
 
 # ---------------------------------------------------------------------------

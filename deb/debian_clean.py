@@ -8,7 +8,7 @@ explicitly generated helper files.
 import shutil
 from pathlib import Path
 
-from debcraft.utils.log import info
+from deb.utils.log import info
 
 # Directories created by debhelper during a build run.
 _ARTIFACT_DIRS = {

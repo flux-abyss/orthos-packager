@@ -13,7 +13,7 @@ echo "========================================"
 echo "Running lint auto-fix (YAPF)"
 echo "========================================"
 
-FILES=$(find debcraft -name "*.py")
+FILES=$(find deb -name "*.py")
 if [[ -n "$FILES" ]]; then
   python3 -m yapf --style google --in-place $FILES
 fi

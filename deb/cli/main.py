@@ -6,23 +6,23 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from debcraft.analyze import analyze as run_analyze
-from debcraft.apply_debian import apply as run_apply
-from debcraft.backends.build_backend_debian import build as run_build
-from debcraft.backends.build_backend_meson import stage as meson_stage
-from debcraft.classifier.artifact_classifier import classify as run_classify
-from debcraft.core.repo_probe import probe
-from debcraft.discovery.chroot_env import ChrootEnv, ChrootEnvError
-from debcraft.discovery.convergence import ConvergenceResult, run_convergence_loop
-from debcraft.discovery.runner import ChrootRunner, HostRunner, RunnerProtocol
-from debcraft.generator.debian_generator import generate as run_generate
-from debcraft.inventory.install_inventory import build_inventory
-from debcraft.privileged import client as priv_client
-from debcraft.privileged.launcher import PrivilegedHelperError
-from debcraft.suggest import suggest as run_suggest
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
-from debcraft.utils.log import error, info
+from deb.analyze import analyze as run_analyze
+from deb.apply_debian import apply as run_apply
+from deb.backends.build_backend_debian import build as run_build
+from deb.backends.build_backend_meson import stage as meson_stage
+from deb.classifier.artifact_classifier import classify as run_classify
+from deb.core.repo_probe import probe
+from deb.discovery.chroot_env import ChrootEnv, ChrootEnvError
+from deb.discovery.convergence import ConvergenceResult, run_convergence_loop
+from deb.discovery.runner import ChrootRunner, HostRunner, RunnerProtocol
+from deb.generator.debian_generator import generate as run_generate
+from deb.inventory.install_inventory import build_inventory
+from deb.privileged import client as priv_client
+from deb.privileged.launcher import PrivilegedHelperError
+from deb.suggest import suggest as run_suggest
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
+from deb.utils.log import error, info
 
 _META_FILE = "package-meta.json"
 

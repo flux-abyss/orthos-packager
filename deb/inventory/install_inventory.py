@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from debcraft.classifier.elf_inspect import has_soname
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
+from deb.classifier.elf_inspect import has_soname
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
 
 # Sentinel return value used to signal that the file should be dropped
 # entirely (not packaged).  Callers must filter entries with this kind.

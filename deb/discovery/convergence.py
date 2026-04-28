@@ -31,16 +31,16 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from debcraft.build_deps import (
+from deb.build_deps import (
     BODHI_BUILD_DEP_MAP,
     scan_meson_dependencies,
 )
-from debcraft.discovery.miss_classifier import DepMiss, classify_misses
-from debcraft.discovery.miss_mapper import map_miss_to_package, tool_dep_names
-from debcraft.discovery.runner import HostRunner, RunnerProtocol
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
-from debcraft.utils.log import error, info
+from deb.discovery.miss_classifier import DepMiss, classify_misses
+from deb.discovery.miss_mapper import map_miss_to_package, tool_dep_names
+from deb.discovery.runner import HostRunner, RunnerProtocol
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
+from deb.utils.log import error, info
 
 if TYPE_CHECKING:
     pass

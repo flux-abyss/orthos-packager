@@ -6,17 +6,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from debcraft.build_deps import BODHI_BUILD_DEP_MAP, scan_meson_dependencies
-from debcraft.deps import _record_reason, infer_dependencies
-from debcraft.generator.inter_pkg import (
+from deb.build_deps import BODHI_BUILD_DEP_MAP, scan_meson_dependencies
+from deb.deps import _record_reason, infer_dependencies
+from deb.generator.inter_pkg import (
     dev_pkg_main_dep,
     script_command_deps,
     synthesize_intra_deps,
 )
-from debcraft.generator.pkg_validator import validate_packages
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
-from debcraft.utils.log import info
+from deb.generator.pkg_validator import validate_packages
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
+from deb.utils.log import info
 
 _PLAN_FILE = "package-plan.json"
 _RESULT_FILE = "generate-result.json"
@@ -474,17 +474,39 @@ def _gen_control(
 
 
 def _gen_rules(rules_overrides: str = "") -> str:
-    """Return debian/rules with optional override content appended."""
+    """Return debian/rules with optional override content appended.
+
+    Always includes override_dh_shlibdeps with --ignore-missing-info so that
+    dpkg-shlibdeps does not emit fabricated Debian package names derived from
+    host-local shlibs registrations (e.g. a custom EFL build that registers
+    'libefl' in the host dpkg database).  Without this, dh_shlibdeps would
+    write shlibs:Depends=libefl (>= X.Y.Z) into the substvars file, producing
+    a Depends entry that does not exist on the target Debian system.
+
+    --ignore-missing-info silently skips any library whose shlibs data is
+    absent from the dpkg database rather than fabricating an entry.  When the
+    package is built inside a proper Debian chroot (where target libraries are
+    registered with correct Debian package names), those entries flow through
+    correctly and the override has no negative effect.
+    """
+    # The shlibdeps override is unconditional: it is harmless when building
+    # against genuine Debian libraries and essential when building on a host
+    # that has non-Debian libraries installed.
+    _SHLIBDEPS_OVERRIDE = textwrap.dedent("""\
+        override_dh_shlibdeps:
+        \tdh_shlibdeps -- --ignore-missing-info
+    """)
     base = textwrap.dedent("""\
         #!/usr/bin/make -f
 
         %:
         \tdh $@
     """)
-    overrides = rules_overrides.strip()
-    if not overrides:
-        return base
-    return base + "\n" + overrides + "\n"
+    result = base + "\n" + _SHLIBDEPS_OVERRIDE
+    extra = rules_overrides.strip()
+    if extra:
+        result += "\n" + extra + "\n"
+    return result
 
 
 def _now_rfc2822() -> str:

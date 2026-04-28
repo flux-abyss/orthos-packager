@@ -15,7 +15,7 @@ echo "========================================"
 
 echo ""
 echo "==> YAPF (format check)"
-mapfile -t FILES < <(find debcraft -name "*.py" | sort)
+mapfile -t FILES < <(find deb -name "*.py" | sort)
 if (( ${#FILES[@]} > 0 )); then
   for file in "${FILES[@]}"; do
     set +e
@@ -39,11 +39,11 @@ fi
 
 echo ""
 echo "==> Flake8 (style + errors)"
-python3 -m flake8 debcraft
+python3 -m flake8 deb
 
 echo ""
 echo "==> Pylint (static analysis)"
-python3 -m pylint debcraft
+python3 -m pylint deb
 
 echo ""
 echo "==> Mypy (type checking)"
@@ -51,7 +51,7 @@ python3 -m mypy
 
 echo ""
 echo "==> Compile check (syntax validation)"
-python3 -m compileall debcraft
+python3 -m compileall deb
 
 echo ""
 echo "========================================"

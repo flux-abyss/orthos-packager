@@ -46,11 +46,11 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from debcraft.build_deps import BODHI_BUILD_DEP_MAP, _apt_cache_policy, _apt_search_dev
-from debcraft.discovery.miss_classifier import DepMiss
+from deb.build_deps import BODHI_BUILD_DEP_MAP, _apt_cache_policy, _apt_search_dev
+from deb.discovery.miss_classifier import DepMiss
 
 if TYPE_CHECKING:
-    from debcraft.discovery.runner import RunnerProtocol
+    from deb.discovery.runner import RunnerProtocol
 
 
 
@@ -274,7 +274,7 @@ def map_miss_to_package(
     Returns a normalised (lowercased, stripped) package name, or None if
     no candidate can be determined via any resolution step.
     """
-    from debcraft.utils.log import info  # local import to avoid circularity
+    from deb.utils.log import info  # local import to avoid circularity
 
     name = miss.name.strip().lower()
     in_chroot = runner is not None and runner.mode == "chroot"

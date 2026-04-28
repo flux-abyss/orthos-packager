@@ -30,18 +30,18 @@ Each stage outputs artifacts under `.orthos/` for debugging and reproducibility.
 From a project directory:
 
 ```bash
-debcraft scan .
-debcraft stage .
-debcraft inventory .
-debcraft classify .
-debcraft generate .
-debcraft build .
+deb scan .
+deb stage .
+deb inventory .
+deb classify .
+deb generate .
+deb build .
 ```
 
 Or run the full pipeline:
 
 ```bash
-debcraft smoke .
+deb smoke .
 ```
 
 ## Current Status

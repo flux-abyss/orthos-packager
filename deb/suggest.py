@@ -10,8 +10,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
 
 _ANALYZE_RESULT_FILE = "analyze-result.json"
 _SUGGEST_RESULT_FILE = "suggest-result.json"

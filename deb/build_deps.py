@@ -1,7 +1,7 @@
 """Build dependency inference and resolution for Meson projects.
 
 scan_meson_dependencies() is the static hint-layer provider for the
-convergence scaffold in debcraft.discovery.convergence.  It is no longer
+convergence scaffold in deb.discovery.convergence.  It is no longer
 the sole source of truth for build dependency decisions.
 
 Scans meson.build files for dependency() declarations, resolves each name to

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from debcraft.privileged.launcher import PrivilegedHelperError, invoke
+from deb.privileged.launcher import PrivilegedHelperError, invoke
 
 __all__ = [
     "PrivilegedHelperError",

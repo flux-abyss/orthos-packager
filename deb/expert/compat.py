@@ -50,7 +50,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from debcraft.expert.models import ExpertVerdict
+from deb.expert.models import ExpertVerdict
 
 _RULE_ID = "source_too_new_for_target_api"
 

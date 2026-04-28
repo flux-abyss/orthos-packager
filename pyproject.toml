@@ -9,9 +9,9 @@ requires-python = ">=3.10"
 description = "Deterministic Debian packager for Meson projects."
 
 [project.scripts]
-orthos-packager = "debcraft.cli.main:main"
-orthos-priv = "debcraft.privileged.helper:main"
+orthos-packager = "deb.cli.main:main"
+orthos-priv = "deb.privileged.helper:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["debcraft*"]
+include = ["deb*"]

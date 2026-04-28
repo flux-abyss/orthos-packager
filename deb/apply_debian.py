@@ -4,9 +4,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import write_json
-from debcraft.utils.log import info
+from deb.paths import orthos_dir
+from deb.utils.fs import write_json
+from deb.utils.log import info
 
 _RESULT_FILE = "apply-result.json"
 

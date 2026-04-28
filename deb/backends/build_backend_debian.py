@@ -4,11 +4,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from debcraft.backends.build_backend_meson import _clean_env
-from debcraft.paths import orthos_dir
-from debcraft.utils.fs import ensure_dir, write_json
-from debcraft.utils.log import info
-from debcraft.utils.shell import run_logged
+from deb.backends.build_backend_meson import _clean_env
+from deb.paths import orthos_dir
+from deb.utils.fs import ensure_dir, write_json
+from deb.utils.log import info
+from deb.utils.shell import run_logged
 
 _RESULT_FILE = "build-result.json"
 _ARTIFACT_GLOBS = ("*.deb", "*.changes", "*.buildinfo")

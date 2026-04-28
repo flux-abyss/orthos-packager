@@ -4,7 +4,7 @@ Defines the RunnerProtocol and two concrete implementations:
 
   HostRunner   — runs commands directly on the host. This is the pre-isolation
                  mode. Host package state affects outcomes. Invoked via
-                 'debcraft smoke --host'.
+                 'deb smoke --host'.
 
   ChrootRunner — runs commands inside a prepared debootstrap chroot. This is
                  the authoritative isolated mode and the default for 'smoke'.
@@ -12,7 +12,7 @@ Defines the RunnerProtocol and two concrete implementations:
 Privilege model:
   ChrootRunner does not contain any direct sudo subprocess calls. All
   chroot-mediated privileged actions are delegated to the privileged helper
-  via debcraft.privileged.client. HostRunner is not affected — its apt_install
+  via deb.privileged.client. HostRunner is not affected — its apt_install
   call is host-level package management, outside the chroot lifecycle scope.
 
 Contract:
@@ -34,9 +34,9 @@ import subprocess
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from debcraft.backends.build_backend_meson import _clean_env
-from debcraft.privileged import client
-from debcraft.privileged.launcher import PrivilegedHelperError
+from deb.backends.build_backend_meson import _clean_env
+from deb.privileged import client
+from deb.privileged.launcher import PrivilegedHelperError
 
 
 # Chroot-internal paths where source and build dirs are bind-mounted.
@@ -176,7 +176,7 @@ class HostRunner:
     Host package state affects outcomes. The only environment sanitation
     applied is _clean_env() (strips active venv from PATH).
 
-    Use 'debcraft smoke --host' to select this runner explicitly.
+    Use 'deb smoke --host' to select this runner explicitly.
     """
 
     mode: str = "host"
@@ -359,7 +359,7 @@ class ChrootRunner:
     any method here is invoked. This class does not mount or unmount anything.
 
     All chroot-mediated privileged actions are delegated to the privileged
-    helper via debcraft.privileged.client. No direct sudo subprocess calls
+    helper via deb.privileged.client. No direct sudo subprocess calls
     exist in this class. Package state inside the chroot is fully isolated
     from the host.
     """
