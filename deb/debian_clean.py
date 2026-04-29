@@ -23,6 +23,7 @@ _ARTIFACT_FILES = {
 
 # Suffixes that identify per-package build byproducts.
 _ARTIFACT_SUFFIXES = {
+    ".log",
     ".substvars",
 }
 
@@ -116,3 +117,12 @@ def clean_debian_tree(debian_dir: Path) -> None:
         if child.name in _ARTIFACT_FILES or child.suffix in _ARTIFACT_SUFFIXES:
             child.unlink()
             info(f"clean: removed {child.name}")
+
+
+def clean_debian_build_artifacts(repo_path: Path) -> None:
+    """Remove dpkg-buildpackage byproducts from *repo_path*/debian/.
+
+    Safe to call multiple times; missing files and directories are silently
+    ignored.  Does not touch any maintainer-authored packaging source.
+    """
+    clean_debian_tree(repo_path / "debian")

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from deb.backends.build_backend_meson import _clean_env
+from deb.debian_clean import clean_debian_build_artifacts
 from deb.paths import orthos_dir
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import info
@@ -17,21 +18,89 @@ _ARTIFACT_GLOBS = ("*.deb", "*.changes", "*.buildinfo")
 _TRANSIENT_DIRS = ("stage",)
 
 
-def _collect_from_parent(repo: Path) -> list[Path]:
-    """Return all artifact paths emitted by dpkg-buildpackage into repo.parent."""
+def _parse_changes_files(changes_path: Path) -> list[Path]:
+    """Return the list of file paths declared in a .changes Files: stanza.
+
+    Lines in the stanza have the form:
+      <md5> <size> <section> <priority> <filename>
+    We return each filename resolved relative to changes_path.parent.
+    Stops at the next RFC-822 field (a line that is not indented and
+    contains a colon) or EOF.
+    """
+    parent = changes_path.parent
+    files: list[Path] = []
+    in_files = False
+    try:
+        text = changes_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        if line.startswith("Files:"):
+            in_files = True
+            continue
+        if in_files:
+            if line.startswith(" ") or line.startswith("\t"):
+                parts = line.split()
+                if len(parts) == 5:  # md5 size section priority filename
+                    candidate = parent / parts[4]
+                    if candidate.exists():
+                        files.append(candidate)
+            else:
+                break  # next RFC-822 field — stanza is over
+    return files
+
+
+def _find_changes_file(parent: Path, source_name: str) -> Path | None:
+    """Return the .changes file produced for *source_name* in *parent*, or None.
+
+    dpkg-buildpackage names it <source>_<version>_<arch>.changes.
+    We match on the source-name prefix to avoid guessing the version.
+    """
+    prefix = source_name + "_"
+    for p in sorted(parent.glob("*.changes")):
+        if p.name.startswith(prefix):
+            return p
+    return None
+
+
+def _collect_from_parent(repo: Path, source_name: str) -> list[Path]:
+    """Return artifact paths in repo.parent that belong to *source_name*.
+
+    Primary strategy: parse the .changes file written by dpkg-buildpackage,
+    which is the authoritative manifest of every file produced for this build.
+    The .changes file itself is included in the returned list.
+
+    Fallback (no .changes found): glob all known artifact extensions and
+    keep only those whose filename starts with the source package name.
+    This prevents collecting unrelated packages that happen to live in the
+    same directory.
+    """
+    parent = repo.parent
+    changes = _find_changes_file(parent, source_name)
+    if changes is not None:
+        # Collect everything listed inside the .changes manifest.
+        listed = _parse_changes_files(changes)
+        # Always include the .changes file itself.
+        all_files = sorted({changes, *listed})
+        return all_files
+
+    # Fallback: filter by source-name prefix.
+    prefix = source_name + "_"
     found: list[Path] = []
     for pattern in _ARTIFACT_GLOBS:
-        found.extend(repo.parent.glob(pattern))
+        for p in parent.glob(pattern):
+            if p.name.startswith(prefix):
+                found.append(p)
     return sorted(found)
 
 
-def _retain_artifacts(repo: Path, orthos: Path) -> list[str]:
+def _retain_artifacts(repo: Path, orthos: Path, source_name: str) -> list[str]:
     """Move build artifacts into orthos/artifacts and return their paths."""
     artifacts_dir = orthos / "artifacts"
     ensure_dir(artifacts_dir)
 
     retained: list[str] = []
-    for src in _collect_from_parent(repo):
+    for src in _collect_from_parent(repo, source_name):
         dest = artifacts_dir / src.name
         if dest.exists():
             dest.unlink()
@@ -77,7 +146,9 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     )
 
     if ok:
-        artifacts = _retain_artifacts(repo, orthos)
+        clean_debian_build_artifacts(repo)
+        source_name: str = meta.get("project_name") or repo.name
+        artifacts = _retain_artifacts(repo, orthos, source_name)
         _cleanup_transient(orthos)
     else:
         artifacts = []
