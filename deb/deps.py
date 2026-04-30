@@ -318,7 +318,7 @@ def _scan_elf_tree(stage_dir: Path, report: DependencyReport) -> None:
 
     Only dynamic (shared-object) linkage visible in ldd output is recorded.
     Statically linked code produces no ldd output and therefore generates
-    no elf-dynamic provenance entries — this is intentional.
+    no elf-dynamic provenance entries - this is intentional.
 
     Packages already recorded for any other ELF in this tree are not
     re-added; reasons accumulate but the depends set stays deduplicated.

@@ -46,7 +46,7 @@ def _parse_changes_files(changes_path: Path) -> list[Path]:
                     if candidate.exists():
                         files.append(candidate)
             else:
-                break  # next RFC-822 field — stanza is over
+                break  # next RFC-822 field - stanza is over
     return files
 
 

@@ -567,7 +567,7 @@ def _check_duplicate_ownership(
     if not duplicates:
         return
 
-    lines = ["duplicate file ownership detected — aborting:"]
+    lines = ["duplicate file ownership detected - aborting:"]
     for entry, pkgs in sorted(duplicates.items()):
         lines.append(f"  {entry!r} claimed by: {', '.join(sorted(pkgs))}")
     raise RuntimeError("\n".join(lines))

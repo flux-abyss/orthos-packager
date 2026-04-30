@@ -21,7 +21,7 @@ from deb.inventory.install_inventory import build_inventory
 from deb.privileged import client as priv_client
 from deb.privileged.launcher import PrivilegedHelperError
 from deb.suggest import suggest as run_suggest
-from deb.paths import orthos_dir
+from deb.paths import orthos_dir, shared_chroot_dir, shared_convergence_build_dir
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import error, info
 
@@ -125,12 +125,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     reset_chroot_p = sub.add_parser(
         "reset-chroot",
-        help="Safely tear down mounts and remove the chroot for a repo.",
+        help="Safely tear down mounts and remove the shared chroot for a suite.",
     )
     reset_chroot_p.add_argument(
         "repo_path",
         metavar="PATH",
-        help="Local path to the repository whose chroot should be reset.",
+        help="Repository path (used to locate the Orthos workspace; chroot is shared).",
+    )
+    reset_chroot_p.add_argument(
+        "--chroot-suite",
+        metavar="SUITE",
+        default="trixie",
+        help="Debian suite whose shared chroot should be reset (default: trixie).",
     )
 
     return parser
@@ -414,8 +420,8 @@ def _run_convergence_loop(repo_path: str, runner: RunnerProtocol) -> int:
     """Run the convergence scaffold via *runner* and log the outcome.
 
     Returns:
-      0 — converged successfully or stalled (nonfatal; stage step handles it)
-      1 — apt install failed inside the loop (fatal; smoke must stop)
+      0 - converged successfully or stalled (nonfatal; stage step handles it)
+      1 - apt install failed inside the loop (fatal; smoke must stop)
     """
     repo = Path(repo_path)
     result: ConvergenceResult = run_convergence_loop(repo, runner=runner)
@@ -429,33 +435,33 @@ def _run_convergence_loop(repo_path: str, runner: RunnerProtocol) -> int:
 
     if result.large_batch_warnings:
         for w in result.large_batch_warnings:
-            info(f"convergence: WARNING — {w}")
+            info(f"convergence: WARNING - {w}")
 
     # Fatal: apt install failed inside the convergence loop.
     if result.install_failed:
-        error("convergence: apt install failed — aborting smoke")
+        error("convergence: apt install failed - aborting smoke")
         return 1
 
     if result.success:
-        info("convergence: meson setup converged — "
+        info("convergence: meson setup converged - "
              "setup-time dependencies satisfied")
         return 0
 
     if result.stalled:
         if result.stall_reason == "unresolved":
-            info(f"convergence: stalled — "
+            info(f"convergence: stalled - "
                  f"{len(result.unresolved_misses)} miss(es) unresolvable:")
             for miss in result.unresolved_misses:
                 info(f"  {miss.miss_type}: {miss.name}")
                 info(f"    from: {miss.raw_line}")
         else:
-            info("convergence: stalled — no new packages to install; "
+            info("convergence: stalled - no new packages to install; "
                  "proceeding to stage")
     else:
         info("convergence: max passes exhausted without setup success; "
              "proceeding to stage")
 
-    # Nonfatal stall — let the stage step fail explicitly so the
+    # Nonfatal stall - let the stage step fail explicitly so the
     # human maintainer sees a concrete error.
     return 0
 
@@ -645,11 +651,17 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         rc = _run_convergence_loop(repo_path, runner)
     else:
         # Isolated chroot mode: default authoritative path.
-        # Use build-convergence/ so chroot Meson setup does not collide with
-        # the host stage build/ directory used by the normal stage step.
-        chroot_root = orthos / "chroot"
+        # The chroot is shared across projects at .orthos/chroots/<suite>-<arch>/
+        # so that .orthos/<repo>/ contains only user-owned files and can be
+        # removed with plain rm -rf without requiring sudo.
+        # The convergence build dir is placed under .orthos/chroot-work/ (also
+        # outside the project workspace) because Meson runs as root inside the
+        # chroot and would leave root-owned files in any bind-mounted directory.
+        chroot_root = shared_chroot_dir(args.chroot_suite)
         logs_dir = orthos / "logs"
-        convergence_build_dir = orthos / "build-convergence"
+        convergence_build_dir = shared_convergence_build_dir(
+            args.chroot_suite, repo.name
+        )
         ensure_dir(logs_dir)
         ensure_dir(convergence_build_dir)
 
@@ -688,7 +700,7 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
             return rc
 
         info(
-            "smoke: convergence ran in chroot — "
+            "smoke: convergence ran in chroot - "
             "stage/build pipeline runs on host in this round"
         )
 
@@ -728,22 +740,36 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_reset_chroot(repo_path: str) -> int:
-    """Tear down mounts and remove the chroot workspace for a repo.
+def _cmd_reset_chroot(repo_path: str, suite: str = "trixie") -> int:
+    """Tear down mounts and remove the shared chroot and convergence work.
 
-    Reads /proc/mounts (via the privileged helper) to find any active mounts
-    under the chroot root, unmounts them, then removes the chroot tree.
-    The user does not need to run sudo umount or sudo rm -rf manually.
+    Targets:
+      - shared chroot:        .orthos/chroots/<suite>-<arch>/
+      - convergence work dir: .orthos/chroot-work/<suite>-<arch>/<repo>/
+
+    Both trees may be root-owned (managed by orthos-priv).  This command
+    removes them so the user never needs sudo for project workspace cleanup.
     """
     repo = Path(repo_path)
-    chroot_root = orthos_dir(repo) / "chroot"
-    info(f"reset-chroot: target: {chroot_root}")
+    chroot_root = shared_chroot_dir(suite)
+    info(f"reset-chroot: suite: {suite}")
+    info(f"reset-chroot: chroot target: {chroot_root}")
     try:
         priv_client.reset_chroot(chroot_root)
     except PrivilegedHelperError as exc:
-        error(f"reset-chroot: failed: {exc}")
+        error(f"reset-chroot: chroot removal failed: {exc}")
         return 1
-    info(f"reset-chroot: done: {chroot_root}")
+    info(f"reset-chroot: chroot done: {chroot_root}")
+
+    # Also destroy the per-repo convergence work dir (root-owned Meson output).
+    conv_work = shared_convergence_build_dir(suite, repo.name)
+    info(f"reset-chroot: convergence work target: {conv_work}")
+    try:
+        priv_client.destroy_convergence_work(conv_work)
+    except PrivilegedHelperError as exc:
+        error(f"reset-chroot: convergence work removal failed: {exc}")
+        return 1
+    info(f"reset-chroot: convergence work done: {conv_work}")
     return 0
 
 
@@ -840,7 +866,10 @@ def main() -> None:
         "analyze": lambda: _cmd_analyze(args.repo_path),
         "suggest": lambda: _cmd_suggest(args.repo_path),
         "smoke": lambda: _cmd_smoke(args),
-        "reset-chroot": lambda: _cmd_reset_chroot(args.repo_path),
+        "reset-chroot": lambda: _cmd_reset_chroot(
+            args.repo_path,
+            suite=getattr(args, "chroot_suite", "trixie"),
+        ),
     }
 
     handler = handlers.get(args.command)

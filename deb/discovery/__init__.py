@@ -1,1 +1,1 @@
-# deb/discovery — authoritative dependency discovery modules
+# deb/discovery - authoritative dependency discovery modules

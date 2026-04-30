@@ -12,7 +12,7 @@ Debian/Ubuntu ones.  Resolution order:
   2. Already-installed package satisfying the need
   3. Bodhi apt candidate
   4. Fallback apt candidate from any enabled repo
-  5. Unresolved — logged; the convergence loop handles stall conditions
+  5. Unresolved - logged; the convergence loop handles stall conditions
 
 BODHI_PKGCONFIG_MAP and validate_pkg_config_closure remain available for
 standalone use or future post-apply pkg-config verification passes.
@@ -248,13 +248,13 @@ def scan_meson_dependencies(repo: Path) -> list[str]:
 
     Three sources, each with its own precision filter:
 
-    1. dependency('name') — external pkg-config/cmake deps by Meson convention.
+    1. dependency('name') - external pkg-config/cmake deps by Meson convention.
        Names shorter than 2 characters are dropped (single-char noise).
 
-    2. cc.find_library('name') / find_library('name') — explicit library
+    2. cc.find_library('name') / find_library('name') - explicit library
        link requirements.  Generic libc/toolchain names are filtered out.
 
-    3. option names from meson_options.txt / meson.options — gated to map
+    3. option names from meson_options.txt / meson.options - gated to map
        membership only.  Project-internal feature toggles produce false
        positives when collected openly; map membership is the reliable
        signal that an option name represents a real external dep.
@@ -266,16 +266,16 @@ def scan_meson_dependencies(repo: Path) -> list[str]:
 
     # 1 + 2: scan every meson.build in the repo tree.
     for meson_file in repo.rglob("meson.build"):
-        # dependency() — drop names shorter than 2 chars.
+        # dependency() - drop names shorter than 2 chars.
         for name in _scan_file_for_pattern(meson_file, _DEP_RE):
             if len(name) >= 2:
                 names.add(name)
-        # find_library() — drop generic libc/toolchain symbols.
+        # find_library() - drop generic libc/toolchain symbols.
         for name in _scan_file_for_pattern(meson_file, _FIND_LIB_RE):
             if name not in _FIND_LIB_SKIP:
                 names.add(name)
 
-    # 3: option names — only keep names already in BODHI_BUILD_DEP_MAP.
+    # 3: option names - only keep names already in BODHI_BUILD_DEP_MAP.
     for opts_name in ("meson_options.txt", "meson.options"):
         opts_file = repo / opts_name
         if opts_file.exists():

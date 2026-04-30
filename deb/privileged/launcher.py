@@ -5,8 +5,8 @@ authorization backend. The client API calls invoke() without knowing which
 backend is in use.
 
 Helper resolution order:
-  1. `orthos-priv` executable found via shutil.which()  — installed path
-  2. helper.py's own filesystem path                    — development fallback
+  1. `orthos-priv` executable found via shutil.which()  - installed path
+  2. helper.py's own filesystem path                    - development fallback
 
 Authorization backend (swappable seam):
   _USE_PKEXEC = False  → sudo <helper_path> (transitional bridge, prompts user)
@@ -36,7 +36,7 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Configuration — the swappable authorization seam
+# Configuration - the swappable authorization seam
 # ---------------------------------------------------------------------------
 
 # Flip to True when polkit action and pkexec are in place.
@@ -65,7 +65,7 @@ def _find_helper() -> str:
 
     Raises PrivilegedHelperError if neither is found.
     """
-    # 1. Installed executable (fixed path — suitable for sudoers / pkexec).
+    # 1. Installed executable (fixed path - suitable for sudoers / pkexec).
     installed = shutil.which("orthos-priv")
     if installed:
         return installed
@@ -105,7 +105,7 @@ def invoke(operation: str, args: dict) -> dict:
         launcher_cmd = ["pkexec", helper_path, operation, "--args", args_json]
     else:
         # Transitional bridge: interactive sudo against the fixed executable.
-        # TRANSITIONAL — not the endorsed long-term model.
+        # TRANSITIONAL - not the endorsed long-term model.
         launcher_cmd = ["sudo", helper_path, operation, "--args", args_json]
 
     try:
@@ -142,7 +142,7 @@ def invoke(operation: str, args: dict) -> dict:
             parsed = json.loads(raw_out)
             msg = parsed.get("error", raw_out)
         except json.JSONDecodeError:
-            # stdout is not JSON — likely a sudo/pkexec message or empty.
+            # stdout is not JSON - likely a sudo/pkexec message or empty.
             # Include both stdout and stderr so the actual cause is visible.
             parts = [p for p in (raw_out, raw_err) if p]
             msg = "  |  ".join(parts) if parts else f"helper exited {result.returncode}"

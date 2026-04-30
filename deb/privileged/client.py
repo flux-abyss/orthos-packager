@@ -50,6 +50,7 @@ __all__ = [
     "pkgconfig_modversion",
     "destroy_chroot",
     "reset_chroot",
+    "destroy_convergence_work",
 ]
 
 
@@ -242,6 +243,20 @@ def reset_chroot(root: Path) -> None:
 
     Reads /proc/mounts to find mounts (does not rely on a stored list).
     Suitable for the reset-chroot CLI command and for --refresh-chroot.
-    *root* must end with a 'chroot' path component.
+    *root* must match the shared chroot path validation (under .orthos/chroots/).
     """
     invoke("reset-chroot", {"root": str(root)})
+
+
+def destroy_convergence_work(path: Path) -> None:
+    """Remove a per-project convergence work directory via orthos-priv.
+
+    *path* must be at least two levels below .orthos/chroot-work/ so the
+    validator prevents accidentally targeting a broad directory.
+
+    Used by reset-chroot to clean root-owned Meson build output that was
+    left by chroot convergence runs inside the bind-mounted build dir.
+    Does not raise if the path does not exist.
+    Raises PrivilegedHelperError if the path fails validation or removal fails.
+    """
+    invoke("destroy-convergence-work", {"path": str(path)})

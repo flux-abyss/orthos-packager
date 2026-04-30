@@ -42,7 +42,7 @@ def _clean_env() -> dict[str, str]:
 
 # Known host include roots used by the system compiler.
 # stage() runs meson compile on the host, so expert analysis of compile
-# failures must use host headers — not chroot headers from prior convergence.
+# failures must use host headers - not chroot headers from prior convergence.
 _HOST_INCLUDE_CANDIDATES: list[str] = [
     "/usr/include",
     "/usr/include/x86_64-linux-gnu",
@@ -252,7 +252,7 @@ def stage(meta: dict[str, Any], runner: "RunnerProtocol | None" = None) -> tuple
                     pc_module = pc_module[:-4]
                 result["symbol_provider"] = provider
             else:
-                # No provider inferred — skip version reporting rather than
+                # No provider inferred - skip version reporting rather than
                 # guessing a hardcoded package name.
                 package = ""
                 pc_module = ""

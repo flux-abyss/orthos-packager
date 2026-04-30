@@ -2,23 +2,23 @@
 
 Defines the RunnerProtocol and two concrete implementations:
 
-  HostRunner   — runs commands directly on the host. This is the pre-isolation
+  HostRunner   - runs commands directly on the host. This is the pre-isolation
                  mode. Host package state affects outcomes. Invoked via
                  'deb smoke --host'.
 
-  ChrootRunner — runs commands inside a prepared debootstrap chroot. This is
+  ChrootRunner - runs commands inside a prepared debootstrap chroot. This is
                  the authoritative isolated mode and the default for 'smoke'.
 
 Privilege model:
   ChrootRunner does not contain any direct sudo subprocess calls. All
   chroot-mediated privileged actions are delegated to the privileged helper
-  via deb.privileged.client. HostRunner is not affected — its apt_install
+  via deb.privileged.client. HostRunner is not affected - its apt_install
   call is host-level package management, outside the chroot lifecycle scope.
 
 Contract:
   ChrootRunner assumes that ChrootEnv.setup_mounts() has already been called
   by the caller (the CLI) before any method is invoked. ChrootRunner does NOT
-  manage mounts. run_convergence_loop() is filesystem-lifecycle agnostic — it
+  manage mounts. run_convergence_loop() is filesystem-lifecycle agnostic - it
   receives a runner and calls its interface without knowing about chroot or mounts.
 
 Path translation:
@@ -54,7 +54,7 @@ class RunnerProtocol(Protocol):
     """Narrow execution interface used by run_convergence_loop.
 
     All methods are deterministic and capture output for audit. The runner
-    does not contain convergence logic — it only knows how to execute commands
+    does not contain convergence logic - it only knows how to execute commands
     and manage packages in its own execution environment.
     """
 
@@ -114,8 +114,8 @@ class RunnerProtocol(Protocol):
         """Find a -dev package for *meson_name* in this runner's environment.
 
         Resolution order:
-          1. pkg_query_exists(lib<name>-dev) — direct candidate check
-          2. apt-cache search --names-only <name>.*-dev — broader search
+          1. pkg_query_exists(lib<name>-dev) - direct candidate check
+          2. apt-cache search --names-only <name>.*-dev - broader search
 
         Returns a normalised package name, or None.
         Used by miss_mapper._dev_search and by the Pass 1 seed resolver

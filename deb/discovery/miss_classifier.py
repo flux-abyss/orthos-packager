@@ -1,16 +1,16 @@
 """Classify concrete missing requirements from meson setup output.
 
 Operates only on meson setup stdout+stderr. Does not classify compile-phase
-or link-phase output — those are later extension points.
+or link-phase output - those are later extension points.
 
 Classification is fully deterministic: fixed substring and regex patterns.
 No scoring, no fuzzy inference.
 
 Miss types in scope:
-  pkg-config-miss  — missing pkg-config module
-  tool-miss        — missing program or tool-type dependency
-  header-miss      — missing header (configure-time probe only)
-  library-miss     — missing library (configure-time probe only)
+  pkg-config-miss  - missing pkg-config module
+  tool-miss        - missing program or tool-type dependency
+  header-miss      - missing header (configure-time probe only)
+  library-miss     - missing library (configure-time probe only)
 
 Note: header-miss and library-miss coverage is limited to configure-time
 Meson probes (cc.has_header, cc.find_library). Misses that only surface
@@ -34,7 +34,7 @@ class DepMiss:
 
 
 # ---------------------------------------------------------------------------
-# Patterns — meson setup stdout/stderr
+# Patterns - meson setup stdout/stderr
 # ---------------------------------------------------------------------------
 
 # pkg-config: "Package 'foo', required by 'bar', not found"
@@ -136,7 +136,7 @@ def classify_misses(
         if not stripped:
             continue
 
-        # --- pkg-config: required-by variant (more specific — check first) ---
+        # --- pkg-config: required-by variant (more specific - check first) ---
         m = _RE_PKGCFG_REQUIRED_BY.search(stripped)
         if m:
             _add(DepMiss(

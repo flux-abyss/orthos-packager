@@ -9,7 +9,7 @@ Design notes:
     than emit a low-confidence verdict.
   - evidence is a list of concrete strings (symbol names, file paths, log
     lines) that the human can verify independently.
-  - suggested_action is plain English. It is intentionally not executable —
+  - suggested_action is plain English. It is intentionally not executable -
     the expert system describes; the human decides.
 """
 

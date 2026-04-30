@@ -1,9 +1,9 @@
 """Convergence loop for Orthos dependency discovery.
 
 Implements the convergence loop:
-  Pass 1 — static Meson hint seed: resolve scan_meson_dependencies() output
+  Pass 1 - static Meson hint seed: resolve scan_meson_dependencies() output
             to packages, install them in the runner's environment as a batch.
-  Pass 2+ — meson setup interrogation: run meson setup via the runner, classify
+  Pass 2+ - meson setup interrogation: run meson setup via the runner, classify
              misses from output, map to packages, batch install, repeat.
 
 The loop exits when:
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 _MAX_CONVERGENCE_PASSES: int = 8
 
 # If a single convergence pass resolves more than this many packages, log
-# a warning. Does not abort — used to surface mapping explosions.
+# a warning. Does not abort - used to surface mapping explosions.
 _LARGE_BATCH_THRESHOLD: int = 25
 
 _RESULT_FILE = "convergence-result.json"
@@ -89,10 +89,10 @@ class ConvergenceResult:
     success=True means meson setup exited 0. It does NOT imply compile
     success, link success, or that dpkg-buildpackage dependencies are met.
 
-    runner_mode: "host" or "chroot" — written to convergence-result.json.
+    runner_mode: "host" or "chroot" - written to convergence-result.json.
 
     isolation_scope: reflects what is actually isolated in this run.
-      "convergence-only" when running in chroot mode — the meson setup
+      "convergence-only" when running in chroot mode - the meson setup
       interrogation and package installs happen inside the chroot, but the
       later stage/build pipeline still runs on the host.
       "host" when running in host mode (no isolation at all).
@@ -102,11 +102,11 @@ class ConvergenceResult:
       Distinct from stalled=True which is advisory (the stage step handles it).
 
     stall_reason values:
-      "no-new-packages" — misses classified/mapped, but all resolved
+      "no-new-packages" - misses classified/mapped, but all resolved
                           packages were already installed; no progress.
-      "unresolved"      — misses classified, but map_miss_to_package
+      "unresolved"      - misses classified, but map_miss_to_package
                           returned None for all; no candidates exist.
-      None              — not stalled (loop succeeded or max passes hit).
+      None              - not stalled (loop succeeded or max passes hit).
     """
 
     success: bool
@@ -133,15 +133,19 @@ def _resolve_seed_packages(
 ) -> list[tuple[str, str]]:
     """Return (package, meson_name) pairs from the static Meson hint layer.
 
-    Resolution is fully runner-aware — no host package metadata is consulted
-    in isolated mode. Resolution order per Meson name:
+    Resolution uses only the curated BODHI_BUILD_DEP_MAP.  If a Meson
+    dependency name is not present in the map it is silently skipped; the
+    convergence loop will surface it as a concrete miss during meson setup
+    interrogation (Pass 2+) where the path-anchored pkgconfig_file_search
+    applies the appropriate precision check.
 
-      1. BODHI_BUILD_DEP_MAP (curated, environment-agnostic)
-      2. runner.apt_search_dev(name) — queries lib<name>-dev then a broader
-         apt-cache search, both inside the runner's own environment
-
-    Unresolved names are silently skipped — the convergence loop surfaces
-    them as concrete misses during meson setup interrogation (Pass 2+).
+    The previous runner.apt_search_dev(name) fallback has been removed.
+    That call performed a broad apt-cache name-pattern search
+    (e.g. ``lzma.*-dev``) which accepted any package whose Debian name
+    contained the dependency word, regardless of whether the package
+    actually shipped the corresponding pkg-config module.  For evisum this
+    caused golang-github-kjk-lzma-dev and similar unrelated packages to be
+    seeded and installed.
     """
     names = scan_meson_dependencies(repo)
     if not names:
@@ -153,13 +157,8 @@ def _resolve_seed_packages(
     for meson_name in names:
         normalized = meson_name.strip().lower()
 
-        # Step 1: curated map — same in all environments.
+        # Curated map only - same in all environments, no network required.
         pkg: str | None = BODHI_BUILD_DEP_MAP.get(normalized)
-
-        # Step 2: runner-aware dev-package search.
-        if not pkg:
-            pkg = runner.apt_search_dev(normalized)
-
         if not pkg:
             continue
 
@@ -169,6 +168,7 @@ def _resolve_seed_packages(
             pairs.append((normalized_pkg, meson_name))
 
     return pairs
+
 
 
 def _write_result(orthos: Path, result: ConvergenceResult) -> None:
@@ -209,7 +209,7 @@ def run_convergence_loop(
     """Run the convergence loop for *repo* using *runner*.
 
     When *runner* is None, a HostRunner is constructed (backward-compatible
-    behavior — identical to the pre-isolation host-based round).
+    behavior - identical to the pre-isolation host-based round).
 
     Pass 1: Resolve static Meson hints, install seed packages via runner.
     Pass 2+: Run meson setup via runner, classify misses, map to packages,
@@ -239,26 +239,26 @@ def run_convergence_loop(
     info(f"convergence: mode = {runner.mode}")
     if runner.mode == "chroot":
         info(
-            "convergence: isolation_scope = convergence-only — "
+            "convergence: isolation_scope = convergence-only - "
             "meson setup and package installs run in chroot; "
             "stage/build pipeline runs on host in this round"
         )
 
     # ------------------------------------------------------------------
-    # Pass 1 — static Meson hint seed
+    # Pass 1 - static Meson hint seed
     # ------------------------------------------------------------------
-    info("convergence: pass 1 — static Meson hint seed")
+    info("convergence: pass 1 - static Meson hint seed")
     seed_log = logs_dir / "convergence-pass-1.log"
     seed_log.write_text("", encoding="utf-8")
 
     seed_pairs = _resolve_seed_packages(repo, runner)
     if seed_pairs:
         info(
-            f"convergence: pass 1 — {len(seed_pairs)} hint candidate(s): "
+            f"convergence: pass 1 - {len(seed_pairs)} hint candidate(s): "
             f"{', '.join(pkg for pkg, _ in seed_pairs)}"
         )
     else:
-        info("convergence: pass 1 — no static hint candidates resolved")
+        info("convergence: pass 1 - no static hint candidates resolved")
 
     # Record provenance for ALL resolved seed packages (installed or not).
     # Provenance is the audit trail; installation status is tracked separately.
@@ -278,7 +278,7 @@ def run_convergence_loop(
 
     if seed_to_install:
         info(
-            f"convergence: pass 1 — installing {len(seed_to_install)} "
+            f"convergence: pass 1 - installing {len(seed_to_install)} "
             f"package(s): {', '.join(seed_to_install)}"
         )
         rc = runner.apt_install(seed_to_install)
@@ -289,12 +289,12 @@ def run_convergence_loop(
             _write_result(orthos, result)
             return result
     else:
-        info("convergence: pass 1 — all seed packages already installed")
+        info("convergence: pass 1 - all seed packages already installed")
 
     result.passes = 1
 
     # ------------------------------------------------------------------
-    # Passes 2..N — meson setup interrogation
+    # Passes 2..N - meson setup interrogation
     # ------------------------------------------------------------------
     last_log_file = seed_log
 
@@ -310,12 +310,12 @@ def run_convergence_loop(
           *_MESON_FLAGS,
         ]
 
-        info(f"convergence: pass {pass_num} — running meson setup "
+        info(f"convergence: pass {pass_num} - running meson setup "
              f"({runner.mode})")
         success, output = runner.run_command(meson_cmd, log_file)
 
         if success:
-            info(f"convergence: pass {pass_num} — meson setup succeeded")
+            info(f"convergence: pass {pass_num} - meson setup succeeded")
             result.success = True
             result.passes = pass_num
             result.log_file = str(log_file)
@@ -323,14 +323,14 @@ def run_convergence_loop(
             return result
 
         info(
-            f"convergence: pass {pass_num} — meson setup failed, "
+            f"convergence: pass {pass_num} - meson setup failed, "
             "classifying misses"
         )
 
         misses = classify_misses(output, tool_dep_names=_tool_names)
         if not misses:
             info(
-                f"convergence: pass {pass_num} — no classifiable misses "
+                f"convergence: pass {pass_num} - no classifiable misses "
                 "in output; stalling"
             )
             result.stalled = True
@@ -338,7 +338,7 @@ def run_convergence_loop(
             result.passes = pass_num
             break
 
-        info(f"convergence: pass {pass_num} — {len(misses)} miss(es) found")
+        info(f"convergence: pass {pass_num} - {len(misses)} miss(es) found")
 
         # Map misses → packages; first resolved per package name wins.
         candidates: dict[str, DepMiss] = {}
@@ -357,7 +357,7 @@ def run_convergence_loop(
         # Unresolved stall: misses exist but no candidate packages at all.
         if not candidates and misses:
             info(
-                f"convergence: pass {pass_num} — all {len(misses)} "
+                f"convergence: pass {pass_num} - all {len(misses)} "
                 "miss(es) unresolvable; stalling"
             )
             result.stalled = True
@@ -374,7 +374,7 @@ def run_convergence_loop(
 
         if not new_packages:
             info(
-                f"convergence: pass {pass_num} — all resolved packages "
+                f"convergence: pass {pass_num} - all resolved packages "
                 "already installed; stalling"
             )
             result.stalled = True
@@ -387,9 +387,9 @@ def run_convergence_loop(
         if len(new_packages) > _LARGE_BATCH_THRESHOLD:
             warning_msg = (
                 f"pass {pass_num}: large batch ({len(new_packages)} "
-                "packages) — possible mapping explosion or classifier issue"
+                "packages) - possible mapping explosion or classifier issue"
             )
-            info(f"convergence: WARNING — {warning_msg}")
+            info(f"convergence: WARNING - {warning_msg}")
             result.large_batch_warnings.append(warning_msg)
 
         # Record provenance (deduped: candidates dict ensures one per package).
@@ -406,12 +406,12 @@ def run_convergence_loop(
         result.unresolved_misses = unresolved_this_pass
 
         info(
-            f"convergence: pass {pass_num} — installing {len(new_packages)} "
+            f"convergence: pass {pass_num} - installing {len(new_packages)} "
             f"package(s): {', '.join(new_packages)}"
         )
         rc = runner.apt_install(new_packages)
         if rc != 0:
-            error(f"convergence: pass {pass_num} — apt install failed (fatal)")
+            error(f"convergence: pass {pass_num} - apt install failed (fatal)")
             result.install_failed = True
             result.passes = pass_num
             result.log_file = str(last_log_file)

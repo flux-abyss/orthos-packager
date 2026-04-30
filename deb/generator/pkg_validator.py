@@ -3,8 +3,8 @@
 Inspects the in-memory output_packages list produced by _build_package_layout
 and reports two structured validation records:
 
-* inter_pkg_validation  — did the primary package pick up expected siblings?
-* dev_pkg_validation    — does each -dev package have the right lockstep dep
+* inter_pkg_validation  - did the primary package pick up expected siblings?
+* dev_pkg_validation    - does each -dev package have the right lockstep dep
                           and no ${shlibs:Depends} leakage?
 
 No files are read or written here.  All inputs come from already-computed

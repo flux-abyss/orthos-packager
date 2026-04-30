@@ -7,7 +7,7 @@ Resolution order per miss type:
 
   pkg-config-miss:
     1. BODHI_BUILD_DEP_MAP (curated)
-    2. runner.pkgconfig_file_search — apt-file search for <name>.pc in chroot
+    2. runner.pkgconfig_file_search - apt-file search for <name>.pc in chroot
        (chroot mode only; installs apt-file and fetches Contents metadata on
        first use; subsequent calls use the cached database)
     3. runner.pkg_query_exists on lib<name>-dev then apt-cache search fallback
@@ -19,14 +19,14 @@ Resolution order per miss type:
   header-miss:
     1. HEADER_DEP_MAP (curated)
     2. runner.dpkg_search_path (queries inside runner's environment)
-    3. _apt_file_search_host — host mode only; not used in chroot mode
+    3. _apt_file_search_host - host mode only; not used in chroot mode
        (chroot isolation: querying the host apt-file database would reflect
        host package metadata, not the chroot's apt sources)
 
   library-miss:
     1. BODHI_BUILD_DEP_MAP (curated)
     2. runner.pkg_query_exists on lib<name>-dev then apt-cache search fallback
-    3. runner.pkgconfig_file_search — apt-file search for <name>.pc in chroot
+    3. runner.pkgconfig_file_search - apt-file search for <name>.pc in chroot
        (chroot mode only; many libraries ship a same-named .pc file)
 
 All returned package names are normalised (lowercased, stripped).
@@ -217,7 +217,7 @@ HEADER_DEP_MAP: dict[str, str] = {
 def _apt_file_search_host(header_name: str) -> str | None:
     """Search for a package providing *header_name* using apt-file.
 
-    Host mode only. In isolated mode this function is NOT called — querying
+    Host mode only. In isolated mode this function is NOT called - querying
     the host apt-file database would break chroot isolation.
     Returns None if apt-file is not installed, produces no results, or
     times out. apt-file must have been updated for results to be fresh.
@@ -345,7 +345,7 @@ def map_miss_to_package(
         #    confirms that a package physically ships the exact .pc module file.
         #    Only meaningful in chroot mode (HostRunner returns None here).
         #    If this returns None, no known package provides this pkg-config
-        #    module — do not fall through to a name-pattern heuristic, as that
+        #    module - do not fall through to a name-pattern heuristic, as that
         #    would accept any package whose name merely contains the dependency
         #    word (e.g. golang-github-pointlander-compress-dev for "compress").
         if runner is not None:
@@ -361,12 +361,12 @@ def map_miss_to_package(
     # ------------------------------------------------------------------
     if miss.miss_type == "header-miss":
         basename = Path(miss.name).name.lower()
-        # 1. Curated header map — try full path first, then basename.
+        # 1. Curated header map - try full path first, then basename.
         pkg = HEADER_DEP_MAP.get(miss.name) or HEADER_DEP_MAP.get(basename)
         if pkg:
             return pkg.strip().lower()
 
-        # 2. dpkg_search_path — queries inside chroot in isolated mode,
+        # 2. dpkg_search_path - queries inside chroot in isolated mode,
         #    queries host in host mode.
         pkg = _dpkg_search(miss.name) or _dpkg_search(basename)
         if pkg:
@@ -379,7 +379,7 @@ def map_miss_to_package(
         if in_chroot:
             info(
                 f"miss_mapper: skipping host apt-file for header '{basename}' "
-                "(chroot mode — host apt-file database would break isolation)"
+                "(chroot mode - host apt-file database would break isolation)"
             )
         else:
             pkg = _apt_file_search_host(basename)
@@ -402,7 +402,7 @@ def map_miss_to_package(
         if pkg:
             return pkg.strip().lower()
 
-        # 3. apt-file search for <name>.pc — many libraries ship a same-named
+        # 3. apt-file search for <name>.pc - many libraries ship a same-named
         #    pkg-config file; this catches cases where the library name and the
         #    .pc name match but the package name does not follow the lib<x>-dev
         #    pattern (e.g. versioned names like lua51).

@@ -2,7 +2,7 @@
 
 Detects when a compile failure is caused by the source code referencing
 symbols, types, or struct members that are absent from the target distro's
-installed headers — rather than from a missing Debian package.
+installed headers - rather than from a missing Debian package.
 
 This is specifically NOT a missing-dependency problem. The package that
 provides the relevant headers is already installed; the installed version
@@ -14,8 +14,8 @@ Public API
 evaluate_compile_failure(compiler_output, include_roots) -> list[ExpertVerdict]
 
 The caller supplies:
-  compiler_output  — combined stdout+stderr from the failed compile step
-  include_roots    — filesystem paths to search for installed headers
+  compiler_output  - combined stdout+stderr from the failed compile step
+  include_roots    - filesystem paths to search for installed headers
                      (e.g. chroot /usr/include, or host /usr/include)
 
 The function returns zero or more ExpertVerdict instances. Zero means the
@@ -281,7 +281,7 @@ def infer_symbol_provider(
     # Step 1: find a header that literally contains the symbol.
     header_path = _find_header_for_symbol(symbol, include_roots)
 
-    # Step 2: fallback — try descending-specificity underscore prefixes so we
+    # Step 2: fallback - try descending-specificity underscore prefixes so we
     # match the most relevant header path rather than the first alphabetical hit.
     # e.g. ecore_x_io_... tries 'ecore_x' before falling back to 'ecore'.
     if header_path is None:
@@ -350,7 +350,7 @@ def evaluate_compile_failure(
             absent.append((sym, raw_line))
 
     if not absent:
-        # All mismatch symbols were found in target headers — likely a different
+        # All mismatch symbols were found in target headers - likely a different
         # class of error (e.g. wrong usage of an existing API). Rule does not fire.
         return []
 
@@ -380,7 +380,7 @@ def evaluate_compile_failure(
             "tag of the source that targets this distro's API version; "
             "(2) locate the commit that introduced usage of the absent symbol "
             "and consider whether a patch or backport is feasible; "
-            "(3) do not continue dependency resolution — the missing symbol "
+            "(3) do not continue dependency resolution - the missing symbol "
             "is not in any available package."
         ),
     )

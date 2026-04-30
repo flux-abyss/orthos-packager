@@ -69,7 +69,7 @@ def _classify(rel: Path, abs_path: Path) -> str:
         # signal: a real shared lib that forgot its version suffix will have
         # a SONAME; a pure plugin typically will not.
         if has_soname(abs_path):
-            # Carries a SONAME — treat as a shared library (runtime).
+            # Carries a SONAME - treat as a shared library (runtime).
             return "shared_lib"
         # No SONAME → runtime-loaded object (plugin); goes to runtime as well
         # so it is never split into a separate dev package by mistake.

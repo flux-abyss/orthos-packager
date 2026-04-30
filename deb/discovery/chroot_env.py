@@ -51,7 +51,7 @@ from deb.utils.log import info
 
 
 # ---------------------------------------------------------------------------
-# Constants — environment-specific layer
+# Constants - environment-specific layer
 # ---------------------------------------------------------------------------
 
 _DEFAULT_SUITE = "trixie"
@@ -76,7 +76,7 @@ class ChrootEnv:
     """Manage a debootstrap-based chroot for isolated convergence.
 
     Location:
-      <chroot_root> — typically .orthos/<repo>/chroot/
+      <chroot_root> - typically .orthos/<repo>/chroot/
 
     Reuse policy:
       The chroot is considered valid when <chroot_root>/bin/bash exists.
@@ -219,6 +219,6 @@ class ChrootEnv:
         try:
             client.teardown_mounts(root=self._root, mounts=self._mounts)
         except PrivilegedHelperError as exc:
-            info(f"convergence: chroot: WARNING — teardown-mounts error: {exc}")
-        # Clear the list regardless — we do not want stale entries on retry.
+            info(f"convergence: chroot: WARNING - teardown-mounts error: {exc}")
+        # Clear the list regardless - we do not want stale entries on retry.
         self._mounts = []

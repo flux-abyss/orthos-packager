@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""orthos-priv — privileged helper for Orthos chroot lifecycle operations.
+"""orthos-priv - privileged helper for Orthos chroot lifecycle operations.
 
 Designed to be installed at a fixed path (e.g. /usr/local/bin/orthos-priv or
 /usr/libexec/orthos-priv) and invoked by pkexec or sudo.
@@ -19,7 +19,7 @@ Authorization model:
 
     The correct sudoers entry shape (if sudo bridge is used during development):
         <user> ALL=(root) NOPASSWD: /usr/local/bin/orthos-priv
-    Target the fixed executable path — never a broad python3 -m ... rule.
+    Target the fixed executable path - never a broad python3 -m ... rule.
 
 Allowlisted operations:
     create-chroot         debootstrap + post-setup
@@ -31,7 +31,7 @@ Allowlisted operations:
     pkg-query-exists      chroot apt-cache policy
     dpkg-search-path      chroot dpkg -S
     apt-search-dev        chroot apt-cache search (dev package lookup)
-    pkgconfig-file-search chroot apt-file search for <name>.pc — returns owning package
+    pkgconfig-file-search chroot apt-file search for <name>.pc - returns owning package
     destroy-chroot        rm -rf <root>
     reset-chroot          teardown mounts then destroy
 
@@ -119,17 +119,103 @@ def _validate_chroot_root(root: Path) -> Path:
 
 
 def _validate_destroy_root(root: Path) -> Path:
-    """Like _validate_chroot_root, plus the final component must be 'chroot'.
+    """Like _validate_chroot_root, plus additional safety checks for destroy/reset.
 
-    This prevents reset-chroot/destroy-chroot from targeting a broad directory
-    if a caller passes the wrong path.
+    The shared chroot path is:
+        .orthos/chroots/<suite>-<arch>/
+
+    Checks (in addition to _validate_chroot_root):
+      - Must be under a .orthos/chroots/ directory component.
+      - The final path component must match the safe suite-arch pattern:
+            ^[a-z0-9.+-]+-[a-z0-9_]+$
+        This accepts names like "trixie-amd64", "bookworm-arm64", "sid-amd64".
+      - The target must not be the .orthos/ or .orthos/chroots/ directory itself.
+
+    These constraints prevent accidentally targeting a broad workspace directory.
     """
+    import re as _re  # local to avoid adding a module-level import for one guard
     resolved = _validate_chroot_root(root)
-    if resolved.name != "chroot":
+
+    parts = resolved.parts
+    # Must have .orthos/chroots/ somewhere in the ancestry.
+    try:
+        orthos_idx = parts.index(".orthos")
+    except ValueError:
+        # Already caught by _validate_chroot_root, but be defensive.
         raise ValueError(
-            f"destroy/reset target must end with a 'chroot' component: {resolved}"
+            f"destroy/reset target must be under .orthos/: {resolved}"
         )
+    if orthos_idx + 1 >= len(parts) or parts[orthos_idx + 1] != "chroots":
+        raise ValueError(
+            f"destroy/reset target must be under .orthos/chroots/: {resolved}"
+        )
+
+    # Must not be .orthos/chroots/ itself.
+    if resolved.name == "chroots":
+        raise ValueError(
+            f"destroy/reset target must not be the chroots/ directory itself: {resolved}"
+        )
+
+    # Final component must match a safe <suite>-<arch> pattern.
+    _SUITE_ARCH_RE = _re.compile(r"^[a-z0-9.+-]+-[a-z0-9_]+$")
+    if not _SUITE_ARCH_RE.match(resolved.name):
+        raise ValueError(
+            f"destroy/reset target name {resolved.name!r} does not match the "
+            f"expected <suite>-<arch> pattern (e.g. 'trixie-amd64'): {resolved}"
+        )
+
     return resolved
+
+
+
+def _validate_convergence_work_dir(path: Path) -> Path:
+    """Return the resolved convergence work path if it passes validation.
+
+    The convergence work tree lives at:
+        .orthos/chroot-work/<suite>-<arch>/<repo-name>/build-convergence/
+        or any parent level down to:
+        .orthos/chroot-work/<suite>-<arch>/<repo-name>/
+
+    Checks:
+      - Must be absolute.
+      - Must contain /.orthos/ as a path component.
+      - Must have 'chroot-work' immediately after '.orthos'.
+      - Must be at least 2 levels below 'chroot-work' (prevents targeting
+        .orthos/chroot-work/ or .orthos/chroot-work/<suite>-<arch>/ alone).
+    """
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"cannot resolve convergence work path: {exc}") from exc
+
+    if not resolved.is_absolute():
+        raise ValueError(f"convergence work path must be absolute: {resolved}")
+
+    parts = resolved.parts
+    try:
+        orthos_idx = parts.index(".orthos")
+    except ValueError:
+        raise ValueError(
+            f"convergence work path must be under .orthos/: {resolved}"
+        )
+
+    if orthos_idx + 1 >= len(parts) or parts[orthos_idx + 1] != "chroot-work":
+        raise ValueError(
+            f"convergence work path must be under .orthos/chroot-work/: {resolved}"
+        )
+
+    # Need at least: .orthos / chroot-work / <suite>-<arch> / <repo>
+    # i.e. at least 2 components after chroot-work.
+    chroot_work_idx = orthos_idx + 1
+    depth_after_chroot_work = len(parts) - chroot_work_idx - 1
+    if depth_after_chroot_work < 2:
+        raise ValueError(
+            f"convergence work path must be at least 2 levels below "
+            f".orthos/chroot-work/ (got depth {depth_after_chroot_work}): {resolved}"
+        )
+
+    return resolved
+
 
 
 def _validate_bind_dst(root: Path, dst: Path) -> Path:
@@ -429,7 +515,7 @@ def _op_setup_mounts(args: dict) -> None:
                 _log(f"orthos-priv: rollback: umount {path_str}")
             else:
                 err = (result.stderr or "").strip()
-                _log(f"orthos-priv: rollback: WARNING — umount {path_str} failed: {err}")
+                _log(f"orthos-priv: rollback: WARNING - umount {path_str} failed: {err}")
 
     try:
         _bind("/proc", root / "proc")
@@ -460,7 +546,7 @@ def _op_teardown_mounts(args: dict) -> None:
         try:
             _validate_bind_dst(root, mount_path)
         except ValueError as exc:
-            _log(f"orthos-priv: WARNING — skipping unsafe mount path: {exc}")
+            _log(f"orthos-priv: WARNING - skipping unsafe mount path: {exc}")
             failures.append(mount_path_str)
             continue
 
@@ -474,7 +560,7 @@ def _op_teardown_mounts(args: dict) -> None:
             _log(f"orthos-priv: umount {mount_path}")
         else:
             err = (result.stderr or "").strip()
-            _log(f"orthos-priv: WARNING — umount {mount_path} failed: {err}")
+            _log(f"orthos-priv: WARNING - umount {mount_path} failed: {err}")
             failures.append(mount_path_str)
 
     _log("orthos-priv: teardown-mounts done")
@@ -621,7 +707,7 @@ def _op_apt_search_dev(args: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# pkgconfig-file-search — find the package providing <name>.pc via apt-file
+# pkgconfig-file-search - find the package providing <name>.pc via apt-file
 # ---------------------------------------------------------------------------
 
 # Sentinel written inside the chroot after the first apt-file db update so we
@@ -707,7 +793,7 @@ def _op_pkgconfig_file_search(args: dict) -> None:
     try:
         _ensure_apt_file(root)
     except RuntimeError as exc:
-        _log(f"orthos-priv: pkgconfig-file-search: {exc} — returning None")
+        _log(f"orthos-priv: pkgconfig-file-search: {exc} - returning None")
         _ok(None)
         return
 
@@ -840,7 +926,7 @@ def _op_reset_chroot(args: dict) -> None:
             _log(f"orthos-priv: reset-chroot: umount {mount_point}")
         else:
             err = (result.stderr or "").strip()
-            _log(f"orthos-priv: reset-chroot: WARNING — umount {mount_point}: {err}")
+            _log(f"orthos-priv: reset-chroot: WARNING - umount {mount_point}: {err}")
 
     # Remove the chroot tree.
     if root.exists():
@@ -853,26 +939,47 @@ def _op_reset_chroot(args: dict) -> None:
     _ok()
 
 
+def _op_destroy_convergence_work(args: dict) -> None:
+    """Remove a per-project convergence work directory under .orthos/chroot-work/.
+
+    Used by reset-chroot to clean root-owned Meson build output left by
+    chroot convergence runs.  Path is strictly validated to be at least
+    two levels below .orthos/chroot-work/.
+    """
+    path = _validate_convergence_work_dir(Path(args["path"]))
+
+    _log(f"orthos-priv: destroy-convergence-work: {path}")
+    if not path.exists():
+        _log(f"orthos-priv: destroy-convergence-work: path does not exist, nothing to do")
+        _ok()
+        return
+
+    subprocess.run(["rm", "-rf", str(path)], check=True)
+    _log(f"orthos-priv: destroy-convergence-work done: {path}")
+    _ok()
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
 _OPERATIONS: dict = {
-    "create-chroot":           _op_create_chroot,
-    "setup-mounts":            _op_setup_mounts,
-    "teardown-mounts":         _op_teardown_mounts,
-    "apt-install-in-chroot":   _op_apt_install_in_chroot,
-    "chroot-exec":             _op_chroot_exec,
-    "pkg-query-installed":     _op_pkg_query_installed,
-    "pkg-query-exists":        _op_pkg_query_exists,
-    "pkg-candidate-version":   _op_pkg_candidate_version,
-    "pkg-query-version":       _op_pkg_query_version,
-    "dpkg-search-path":        _op_dpkg_search_path,
-    "apt-search-dev":          _op_apt_search_dev,
-    "pkgconfig-file-search":   _op_pkgconfig_file_search,
-    "pkgconfig-modversion":    _op_pkgconfig_modversion,
-    "destroy-chroot":          _op_destroy_chroot,
-    "reset-chroot":            _op_reset_chroot,
+    "create-chroot":              _op_create_chroot,
+    "setup-mounts":               _op_setup_mounts,
+    "teardown-mounts":            _op_teardown_mounts,
+    "apt-install-in-chroot":      _op_apt_install_in_chroot,
+    "chroot-exec":                _op_chroot_exec,
+    "pkg-query-installed":        _op_pkg_query_installed,
+    "pkg-query-exists":           _op_pkg_query_exists,
+    "pkg-candidate-version":      _op_pkg_candidate_version,
+    "pkg-query-version":          _op_pkg_query_version,
+    "dpkg-search-path":           _op_dpkg_search_path,
+    "apt-search-dev":             _op_apt_search_dev,
+    "pkgconfig-file-search":      _op_pkgconfig_file_search,
+    "pkgconfig-modversion":       _op_pkgconfig_modversion,
+    "destroy-chroot":             _op_destroy_chroot,
+    "reset-chroot":               _op_reset_chroot,
+    "destroy-convergence-work":   _op_destroy_convergence_work,
 }
 
 
