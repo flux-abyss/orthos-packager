@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -680,8 +681,11 @@ def _op_pkgconfig_file_search(args: dict) -> None:
 
     Strategy:
       1. Ensure apt-file is installed and its database is current (once per chroot).
-      2. Run: apt-file search --package-only <name>.pc
-         This queries Contents metadata — no network required after apt-file update.
+      2. Run: apt-file search --regexp '(usr/lib/.*/pkgconfig|usr/share/pkgconfig)/<name>\.pc$'
+         This queries Contents metadata and restricts matches to the two canonical
+         pkg-config directory trees.  A substring search on bare '<name>.pc' is NOT
+         used because it would match Go import paths, documentation, examples, and
+         any other path component that happens to contain the filename.
       3. Among all candidates:
          a. Prefer *-dev packages (deterministic: alphabetical first among -dev).
          b. Fall back to the alphabetical-first non-dev package.
@@ -691,9 +695,14 @@ def _op_pkgconfig_file_search(args: dict) -> None:
     """
     root = _validate_chroot_root(Path(args["root"]))
     name = str(args["name"]).strip().lower()
-    pc_filename = f"{name}.pc"
+    # Anchor to canonical pkg-config install directories only.
+    # This rejects matches in Go source trees, documentation paths, examples,
+    # and any other location that is not a real pkg-config provider.
+    pc_pattern = (
+        f"(usr/lib/.*/pkgconfig|usr/share/pkgconfig)/{re.escape(name)}\.pc$"
+    )
 
-    _log(f"orthos-priv: pkgconfig-file-search: looking for {pc_filename}")
+    _log(f"orthos-priv: pkgconfig-file-search: pattern={pc_pattern!r}")
 
     try:
         _ensure_apt_file(root)
@@ -705,7 +714,7 @@ def _op_pkgconfig_file_search(args: dict) -> None:
     result = subprocess.run(
         [
             "chroot", str(root),
-            "apt-file", "search", "--package-only", pc_filename,
+            "apt-file", "search", "--regexp", "--package-only", pc_pattern,
         ],
         capture_output=True,
         text=True,
@@ -719,7 +728,7 @@ def _op_pkgconfig_file_search(args: dict) -> None:
     ]
 
     if not candidates:
-        _log(f"orthos-priv: pkgconfig-file-search: no package owns {pc_filename}")
+        _log(f"orthos-priv: pkgconfig-file-search: no pkgconfig provider for {name!r}")
         _ok(None)
         return
 
@@ -730,7 +739,7 @@ def _op_pkgconfig_file_search(args: dict) -> None:
     else:
         chosen = sorted(candidates)[0]
 
-    _log(f"orthos-priv: pkgconfig-file-search: {pc_filename} -> {chosen}")
+    _log(f"orthos-priv: pkgconfig-file-search: {name!r} -> {chosen}")
     _ok(chosen)
 
 

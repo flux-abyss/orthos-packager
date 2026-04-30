@@ -1,6 +1,7 @@
 """orthos-packager – entry point."""
 
 import argparse
+import shutil
 import sys
 import subprocess
 from pathlib import Path
@@ -466,8 +467,8 @@ def _partition_debs(debs: list[str]) -> tuple[list[str], list[str]]:
     return main_debs, dbgsym_debs
 
 
-def _run_prebuild_pipeline(repo_path: str) -> int:
-    """Run scan→generate pipeline and auto-apply debian/ if the repo lacks one."""
+def _run_smoke_prebuild_pipeline(repo_path: str) -> int:
+    """Run scan→generate pipeline for smoke (no apply, no repo/debian requirement)."""
     for step in (
             _cmd_scan,
             _cmd_stage,
@@ -478,14 +479,90 @@ def _run_prebuild_pipeline(repo_path: str) -> int:
         rc = step(repo_path)
         if rc != 0:
             return rc
-
-    repo = Path(repo_path)
-    if not (repo / "debian").exists():
-        info("smoke: repo/debian absent – auto-applying generated debian/")
-        return _cmd_apply(repo_path, force=False)
-
-    info("smoke: repo/debian present – skipping auto-apply")
     return 0
+
+
+# Directories excluded from the isolated smoke source copy.
+_BUILD_SRC_EXCLUDE = {".git", ".orthos", "build", "dist", "__pycache__", "debian"}
+
+
+def prepare_smoke_build_source(repo_path: Path, orthos_path: Path) -> Path:
+    """Create an isolated copy of *repo_path* under *orthos_path*/build-src/.
+
+    Any previous build-src is removed before recreation so the copy is always
+    fresh.  Only .git, .orthos, build, dist, __pycache__, and debian are
+    excluded; all other source files are preserved verbatim.
+
+    Returns the path to the new build-src directory.
+    """
+    build_src = orthos_path / "build-src"
+    if build_src.exists():
+        shutil.rmtree(build_src)
+
+    def _ignore(src: str, names: list[str]) -> set[str]:
+        return {n for n in names if n in _BUILD_SRC_EXCLUDE}
+
+    shutil.copytree(repo_path, build_src, ignore=_ignore, dirs_exist_ok=False)
+    return build_src
+
+
+def copy_generated_debian_to_build_source(
+    generated_debian: Path, build_src: Path
+) -> None:
+    """Copy *generated_debian* into *build_src*/debian/.
+
+    Any previous build_src/debian is removed first so the injection is clean.
+    """
+    target = build_src / "debian"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(generated_debian, target, dirs_exist_ok=False)
+
+
+def _run_smoke_build_step(
+    build_src: Path, original_orthos: Path
+) -> tuple[int, dict[str, Any] | None]:
+    """Build from the isolated *build_src* copy and log the outcome.
+
+    *build_src* is passed as repo_path to run_build so dpkg-buildpackage
+    runs inside the isolated copy.  The orthos workspace used for result
+    files and artifact storage is still the *original_orthos* directory so
+    the caller can find build-result.json in the usual place.
+
+    Returns (rc, result or None).
+    """
+    try:
+        # Probe the isolated copy; it has all source files + injected debian/.
+        meta = probe(str(build_src))
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1, None
+
+    # Override the orthos workspace so results land in the original repo's
+    # .orthos dir, not inside build-src's (nonexistent) .orthos.
+    meta["_orthos_override"] = str(original_orthos)
+
+    try:
+        rc, result = run_build(meta)
+    except FileNotFoundError as exc:
+        error(str(exc))
+        return 1, None
+
+    info(f"repo:    {result['repo_path']}")
+    info(f"debian:  {result['target_debian_dir']}")
+    info(f"log:     {result['log_file']}")
+
+    if result["success"]:
+        info("result:  success")
+        info(f"artifacts: {len(result['artifacts'])}")
+        for p in result["artifacts"]:
+            info(f"  {p}")
+    else:
+        failure_step = result.get("failure_step") or "unknown"
+        error(f"build failed at: {failure_step}")
+        error(f"see log: {result['log_file']}")
+
+    return rc, result
 
 
 def _run_build_step(repo_path: str) -> tuple[int, dict[str, Any] | None]:
@@ -554,11 +631,12 @@ def _install_built_debs(debs: list[str]) -> int:
     return 0
 
 
-# pylint: disable=too-many-return-statements
+# pylint: disable=too-many-return-statements,too-many-locals
 def _cmd_smoke(args: argparse.Namespace) -> int:
     """Run the full pipeline, install packages, and resolve dependencies."""
     repo_path = args.repo_path
     repo = Path(repo_path)
+    orthos = orthos_dir(repo)
 
     if args.host:
         # Pre-isolation host mode: explicit opt-in.
@@ -567,12 +645,13 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         rc = _run_convergence_loop(repo_path, runner)
     else:
         # Isolated chroot mode: default authoritative path.
-        orthos = orthos_dir(repo)
+        # Use build-convergence/ so chroot Meson setup does not collide with
+        # the host stage build/ directory used by the normal stage step.
         chroot_root = orthos / "chroot"
         logs_dir = orthos / "logs"
-        build_dir = orthos / "build"
+        convergence_build_dir = orthos / "build-convergence"
         ensure_dir(logs_dir)
-        ensure_dir(build_dir)
+        ensure_dir(convergence_build_dir)
 
         chroot_log = logs_dir / "chroot-setup.log"
         env = ChrootEnv(chroot_root)
@@ -589,7 +668,7 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         try:
             env.setup_mounts(
                 source_repo=repo,
-                build_dir=build_dir,
+                build_dir=convergence_build_dir,
                 logs_dir=logs_dir,
             )
         except ChrootEnvError as exc:
@@ -608,7 +687,6 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         if rc != 0:
             return rc
 
-        # Fix 4: make isolation scope explicit after convergence completes.
         info(
             "smoke: convergence ran in chroot — "
             "stage/build pipeline runs on host in this round"
@@ -617,11 +695,23 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     if rc != 0:
         return rc
 
-    rc = _run_prebuild_pipeline(repo_path)
+    # scan → stage → inventory → classify → generate (no apply)
+    rc = _run_smoke_prebuild_pipeline(repo_path)
     if rc != 0:
         return rc
 
-    rc, result = _run_build_step(repo_path)
+    # Create an isolated source copy and inject generated debian/ into it.
+    generated_debian = orthos / "debian"
+    if not generated_debian.is_dir():
+        error(f"smoke: generated debian/ not found: {generated_debian}")
+        return 1
+
+    build_src = prepare_smoke_build_source(repo, orthos)
+    info(f"smoke: building from isolated source copy: {build_src}")
+    copy_generated_debian_to_build_source(generated_debian, build_src)
+
+    # Build from the isolated copy; results go to the original orthos dir.
+    rc, result = _run_smoke_build_step(build_src, orthos)
     if result is None or not result["success"]:
         return rc
 

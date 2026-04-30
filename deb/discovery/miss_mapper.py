@@ -339,20 +339,20 @@ def map_miss_to_package(
         if pkg:
             return pkg.strip().lower()
 
-        # 2. apt-file search for <name>.pc inside the chroot.
-        #    This is the authoritative resolver: it finds the exact package
-        #    that ships the .pc file, derived from distro Contents metadata.
+        # 2. apt-file search for <name>.pc inside the chroot, anchored to the
+        #    canonical pkgconfig directories (usr/lib/*/pkgconfig or
+        #    usr/share/pkgconfig).  This is the authoritative resolver: it
+        #    confirms that a package physically ships the exact .pc module file.
         #    Only meaningful in chroot mode (HostRunner returns None here).
+        #    If this returns None, no known package provides this pkg-config
+        #    module — do not fall through to a name-pattern heuristic, as that
+        #    would accept any package whose name merely contains the dependency
+        #    word (e.g. golang-github-pointlander-compress-dev for "compress").
         if runner is not None:
             pkg = runner.pkgconfig_file_search(name)
             if pkg:
                 info(f"miss_mapper: pkgconfig-file-search resolved {name!r} -> {pkg}")
                 return pkg.strip().lower()
-
-        # 3. Runner-aware dev-package search (name pattern heuristic).
-        pkg = _dev_search(name)
-        if pkg:
-            return pkg.strip().lower()
 
         return None
 

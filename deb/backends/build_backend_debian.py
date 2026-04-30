@@ -95,9 +95,20 @@ def _collect_from_parent(repo: Path, source_name: str) -> list[Path]:
 
 
 def _retain_artifacts(repo: Path, orthos: Path, source_name: str) -> list[str]:
-    """Move build artifacts into orthos/artifacts and return their paths."""
+    """Move build artifacts into orthos/artifacts and return their paths.
+
+    Before collecting new artifacts, any existing file in orthos/artifacts
+    whose name starts with "<source_name>_" is removed so that stale outputs
+    from previous builds of the same package do not appear in the result.
+    """
     artifacts_dir = orthos / "artifacts"
     ensure_dir(artifacts_dir)
+
+    # Clear stale artifacts for this source package.
+    prefix = source_name + "_"
+    for stale in list(artifacts_dir.iterdir()):
+        if stale.is_file() and stale.name.startswith(prefix):
+            stale.unlink()
 
     retained: list[str] = []
     for src in _collect_from_parent(repo, source_name):
@@ -122,7 +133,13 @@ def _cleanup_transient(orthos: Path) -> None:
 def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """Run dpkg-buildpackage using debian/ from the source repo."""
     repo = Path(meta["repo_path"])
-    orthos = orthos_dir(repo)
+    # Allow callers (e.g. smoke) to redirect the orthos workspace so that
+    # build-result.json and artifacts land in the original repo's .orthos dir
+    # even when building from an isolated source copy.
+    if "_orthos_override" in meta:
+        orthos = Path(meta["_orthos_override"])
+    else:
+        orthos = orthos_dir(repo)
 
     dest_debian = repo / "debian"
     if not dest_debian.exists():
