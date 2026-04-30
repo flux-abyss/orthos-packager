@@ -32,7 +32,7 @@ from pathlib import Path
 # names.  Bodhi-native entries are marked with "bodhi" in the source field.
 
 BODHI_BUILD_DEP_MAP: dict[str, str] = {
-    # EFL / Elementary
+    # EFL / Elementary  (all modules ship in Bodhi's monolithic libefl-dev)
     "elementary": "libefl-dev",
     "efl": "libefl-dev",
     "ecore": "libefl-dev",
@@ -44,6 +44,7 @@ BODHI_BUILD_DEP_MAP: dict[str, str] = {
     "ecore-audio": "libefl-dev",
     "ecore-imf": "libefl-dev",
     "ecore-x": "libefl-dev",
+    "ecore-fb": "libefl-dev",
     "evas": "libefl-dev",
     "edje": "libefl-dev",
     "eina": "libefl-dev",
@@ -52,9 +53,14 @@ BODHI_BUILD_DEP_MAP: dict[str, str] = {
     "eio": "libefl-dev",
     "eldbus": "libefl-dev",
     "ethumb": "libefl-dev",
+    "ethumb-client": "libefl-dev",
     "emotion": "libefl-dev",
     "eet": "libefl-dev",
     "emile": "libefl-dev",
+    "eeze": "libefl-dev",
+    "eolian": "libefl-dev",
+    "embryo": "libefl-dev",
+    "elua": "libefl-dev",
     # GLib ecosystem
     "glib-2.0": "libglib2.0-dev",
     "gobject-2.0": "libglib2.0-dev",

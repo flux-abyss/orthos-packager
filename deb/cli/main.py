@@ -93,7 +93,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     smoke = sub.add_parser(
         "smoke",
-        help="Run full pipeline, install packages, and resolve dependencies.",
+        help=(
+            "Run convergence + full build pipeline. "
+            "Build-only by default; use --install-host to install artifacts on this system."
+        ),
     )
     smoke.add_argument(
         "repo_path",
@@ -121,6 +124,17 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SUITE",
         default="trixie",
         help="Debian suite for chroot creation (default: trixie).",
+    )
+    smoke.add_argument(
+        "--install-host",
+        action="store_true",
+        default=False,
+        help=(
+            "Install the built packages onto this system after a successful build. "
+            "Default (without this flag) is build-only: artifacts are produced and "
+            "printed but NOT installed. Use this flag only when you explicitly want "
+            "to install the packages on the current host."
+        ),
     )
 
     reset_chroot_p = sub.add_parser(
@@ -732,11 +746,22 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         error("no .deb artifacts found")
         return 1
 
+    info("smoke: build complete")
+    for p in debs:
+        info(f"  artifact: {p}")
+
+    if not args.install_host:
+        info("smoke: host install skipped (build-only mode)")
+        info("smoke: use --install-host to install artifacts on this system")
+        info("smoke complete ✔")
+        return 0
+
+    info("smoke: installing artifacts on host (--install-host)")
     rc = _install_built_debs(debs)
     if rc != 0:
         return rc
 
-    info("smoke test complete ✔")
+    info("smoke complete ✔")
     return 0
 
 

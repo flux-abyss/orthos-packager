@@ -53,6 +53,22 @@ if TYPE_CHECKING:
     from deb.discovery.runner import RunnerProtocol
 
 
+# ---------------------------------------------------------------------------
+# Provider-family blocklist
+# ---------------------------------------------------------------------------
+# Packages listed here must NEVER be auto-installed by any resolution path.
+# They are excluded because they conflict with the curated provider family
+# already selected by BODHI_BUILD_DEP_MAP.
+#
+# libefl-all-dev is the Debian split-EFL meta-package.  It conflicts with
+# Bodhi's monolithic libefl-dev; mixing the two causes dpkg file-overwrite
+# errors.  Any resolution path (pkgconfig_file_search, exact lib-dev check)
+# that returns a blocked package is treated as "not found" for that miss.
+_BLOCKED_PACKAGES: frozenset[str] = frozenset({
+    "libefl-all-dev",   # Debian split-EFL; conflicts with Bodhi libefl-dev
+})
+
+
 
 # ---------------------------------------------------------------------------
 # Curated tool name → Debian package map
@@ -350,9 +366,14 @@ def map_miss_to_package(
         #    word (e.g. golang-github-pointlander-compress-dev for "compress").
         if runner is not None:
             pkg = runner.pkgconfig_file_search(name)
-            if pkg:
+            if pkg and pkg.strip().lower() not in _BLOCKED_PACKAGES:
                 info(f"miss_mapper: pkgconfig-file-search resolved {name!r} -> {pkg}")
                 return pkg.strip().lower()
+            if pkg and pkg.strip().lower() in _BLOCKED_PACKAGES:
+                info(
+                    f"miss_mapper: pkgconfig-file-search returned blocked "
+                    f"package {pkg!r} for {name!r} — skipping"
+                )
 
         return None
 
@@ -397,20 +418,36 @@ def map_miss_to_package(
         if pkg:
             return pkg.strip().lower()
 
-        # 2. Runner-aware dev-package search.
-        pkg = _dev_search(name)
-        if pkg:
-            return pkg.strip().lower()
+        # 2. Exact lib<name>-dev existence check — no fuzzy name-pattern
+        #    search.  _dev_search (apt-cache search --names-only) is not used
+        #    here because it accepts any package whose Debian name contains the
+        #    dependency word, regardless of whether that package actually
+        #    satisfies the library requirement (e.g. it would map 'lzma' to
+        #    golang-github-kjk-lzma-dev).  Only an exact package name query is
+        #    acceptable for automatic installs.
+        exact_dev = f"lib{name}-dev"
+        if exact_dev not in _BLOCKED_PACKAGES and _pkg_exists(exact_dev):
+            return exact_dev
 
-        # 3. apt-file search for <name>.pc - many libraries ship a same-named
+        # 3. apt-file search for <name>.pc — many libraries ship a same-named
         #    pkg-config file; this catches cases where the library name and the
         #    .pc name match but the package name does not follow the lib<x>-dev
-        #    pattern (e.g. versioned names like lua51).
+        #    pattern (e.g. versioned names like lua51).  The search is
+        #    path-anchored (canonical pkgconfig directories only) so Go source
+        #    trees and documentation paths are never matched.
         if runner is not None:
             pkg = runner.pkgconfig_file_search(name)
-            if pkg:
-                info(f"miss_mapper: pkgconfig-file-search (library) resolved {name!r} -> {pkg}")
+            if pkg and pkg.strip().lower() not in _BLOCKED_PACKAGES:
+                info(
+                    f"miss_mapper: pkgconfig-file-search (library) "
+                    f"resolved {name!r} -> {pkg}"
+                )
                 return pkg.strip().lower()
+            if pkg and pkg.strip().lower() in _BLOCKED_PACKAGES:
+                info(
+                    f"miss_mapper: pkgconfig-file-search (library) returned "
+                    f"blocked package {pkg!r} for {name!r} — skipping"
+                )
 
         return None
 
