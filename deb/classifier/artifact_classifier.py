@@ -45,20 +45,31 @@ def _group_into_buckets(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return a list of bucket dicts in canonical order, all six always present."""
     # Accumulate file paths per bucket.
     buckets: dict[str, list[str]] = {name: [] for name in _BUCKET_ORDER}
+    special_files: dict[str, list[dict[str, str]]] = {name: [] for name in _BUCKET_ORDER}
 
     for entry in entries:
         kind = entry.get("kind", "other")
         bucket = _KIND_TO_BUCKET.get(kind, "other")
-        buckets[bucket].append(entry["path"])
+        path = entry["path"]
+        buckets[bucket].append(path)
+        if entry.get("is_special"):
+            special_files[bucket].append({
+                "path": path,
+                "mode_octal": entry.get("mode_octal", "0755"),
+                "owner": entry.get("owner", "root"),
+                "group": entry.get("group", "root"),
+            })
 
     # Sort paths within each bucket and build output list.
     result: list[dict[str, Any]] = []
     for name in _BUCKET_ORDER:
         files = sorted(buckets[name])
+        specials = sorted(special_files[name], key=lambda x: x["path"])
         result.append({
             "file_count": len(files),
             "files": files,
             "name": name,
+            "special_files": specials,
         })
 
     return result

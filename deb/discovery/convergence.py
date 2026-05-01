@@ -130,7 +130,7 @@ class ConvergenceResult:
 def _resolve_seed_packages(
     repo: Path,
     runner: RunnerProtocol,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[str]]:
     """Return (package, meson_name) pairs from the static Meson hint layer.
 
     Resolution uses only the curated BODHI_BUILD_DEP_MAP.  If a Meson
@@ -141,7 +141,7 @@ def _resolve_seed_packages(
 
     The previous runner.apt_search_dev(name) fallback has been removed.
     That call performed a broad apt-cache name-pattern search
-    (e.g. ``lzma.*-dev``) which accepted any package whose Debian name
+    (e.g. 'lzma.*-dev') which accepted any package whose Debian name
     contained the dependency word, regardless of whether the package
     actually shipped the corresponding pkg-config module.  For evisum this
     caused golang-github-kjk-lzma-dev and similar unrelated packages to be
@@ -149,10 +149,11 @@ def _resolve_seed_packages(
     """
     names = scan_meson_dependencies(repo)
     if not names:
-        return []
+        return [], []
 
     seen_pkgs: set[str] = set()
     pairs: list[tuple[str, str]] = []
+    unresolved: list[str] = []
 
     for meson_name in names:
         normalized = meson_name.strip().lower()
@@ -163,11 +164,29 @@ def _resolve_seed_packages(
             continue
 
         normalized_pkg = pkg.strip().lower()
-        if normalized_pkg not in seen_pkgs:
-            seen_pkgs.add(normalized_pkg)
-            pairs.append((normalized_pkg, meson_name))
+        
+        target_pkg: str | None = normalized_pkg
+        if not runner.pkg_query_exists(target_pkg):
+            if target_pkg.startswith("lib") and target_pkg.endswith("-dev"):
+                base_name = target_pkg[3:-4]
+                fallback = f"lib{base_name}-all-dev"
+                if runner.pkg_query_exists(fallback):
+                    target_pkg = fallback
+                else:
+                    target_pkg = None
+            else:
+                target_pkg = None
 
-    return pairs
+        if not target_pkg:
+            if meson_name not in unresolved:
+                unresolved.append(meson_name)
+            continue
+
+        if target_pkg not in seen_pkgs:
+            seen_pkgs.add(target_pkg)
+            pairs.append((target_pkg, meson_name))
+
+    return pairs, unresolved
 
 
 
@@ -251,7 +270,7 @@ def run_convergence_loop(
     seed_log = logs_dir / "convergence-pass-1.log"
     seed_log.write_text("", encoding="utf-8")
 
-    seed_pairs = _resolve_seed_packages(repo, runner)
+    seed_pairs, unresolved_seeds = _resolve_seed_packages(repo, runner)
     if seed_pairs:
         info(
             f"convergence: pass 1 - {len(seed_pairs)} hint candidate(s): "
@@ -259,6 +278,15 @@ def run_convergence_loop(
         )
     else:
         info("convergence: pass 1 - no static hint candidates resolved")
+
+    for meson_name in unresolved_seeds:
+        result.unresolved_misses.append(DepMiss(
+            miss_type="static-meson-hint",
+            name=meson_name,
+            required_by=None,
+            raw_line=f"seed hint for {meson_name}",
+        ))
+        info(f"  unresolvable: static-meson-hint: {meson_name}")
 
     # Record provenance for ALL resolved seed packages (installed or not).
     # Provenance is the audit trail; installation status is tracked separately.

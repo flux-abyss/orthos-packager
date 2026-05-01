@@ -135,6 +135,17 @@ class RunnerProtocol(Protocol):
         """
         ...
 
+    def apt_file_search_absolute_path(self, path: str) -> str | None:
+        """Return the package that owns the absolute *path* in this runner's environment.
+
+        Uses apt-file search. In chroot mode this installs and updates apt-file
+        inside the chroot on first use (guarded by a sentinel so cost is paid
+        only once). In host mode returns None (host resolution uses other paths).
+
+        Returns a normalised package name, or None.
+        """
+        ...
+
     def pkg_query_version(self, package: str) -> str | None:
         """Return the installed version of *package* in this runner's environment.
 
@@ -291,6 +302,10 @@ class HostRunner:
         in miss_mapper (host-side). The chroot-specific pkgconfig-file-search
         operation is only meaningful for ChrootRunner.
         """
+        return None
+
+    def apt_file_search_absolute_path(self, path: str) -> str | None:
+        """Not implemented in host mode."""
         return None
 
     def pkg_query_version(self, package: str) -> str | None:
@@ -452,6 +467,16 @@ class ChrootRunner:
         """
         try:
             return client.pkgconfig_file_search(self._chroot_root, name)
+        except PrivilegedHelperError:
+            return None
+
+    def apt_file_search_absolute_path(self, path: str) -> str | None:
+        """Return the package that owns absolute *path* inside the chroot, or None.
+        
+        Delegates to the apt-file-search-absolute-path helper operation.
+        """
+        try:
+            return client.apt_file_search_absolute_path(self._chroot_root, path)
         except PrivilegedHelperError:
             return None
 

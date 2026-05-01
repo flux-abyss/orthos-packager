@@ -27,8 +27,8 @@ def is_elf(path: Path) -> bool:
 def has_soname(path: Path) -> bool:
     """Return True when *path* carries a DT_SONAME dynamic entry.
 
-    Uses ``objdump -p`` to parse the dynamic section.  A shared library
-    intended for linking (i.e. one that ``ldconfig`` would register) will
+    Uses 'objdump -p' to parse the dynamic section.  A shared library
+    intended for linking (i.e. one that 'ldconfig' would register) will
     always have a SONAME.  Plugin/runtime-loaded objects typically do not.
 
     Returns False on any subprocess error, missing binary, or non-ELF input.

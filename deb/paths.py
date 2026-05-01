@@ -20,7 +20,7 @@ def shared_chroot_dir(suite: str) -> Path:
 
     The shared chroot lives outside every per-project workspace so that
     per-project directories (.orthos/<repo>/) contain only user-owned files
-    and can be removed with plain ``rm -rf`` without requiring sudo.
+    and can be removed with plain 'rm -rf' without requiring sudo.
 
     The chroot itself may be root-owned (created by orthos-priv); that is
     expected and acceptable.
@@ -39,7 +39,7 @@ def shared_convergence_build_dir(suite: str, repo_name: str) -> Path:
     files it creates here are root-owned.  Placing this tree under
     .orthos/chroot-work/ (not under .orthos/<repo>/) means the per-project
     workspace (.orthos/<repo>/) contains only user-owned files and can be
-    removed with plain ``rm -rf`` without requiring sudo.
+    removed with plain 'rm -rf' without requiring sudo.
 
     The chroot-work tree is cleaned by reset-chroot via orthos-priv.
     """

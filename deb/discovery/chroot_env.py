@@ -110,6 +110,7 @@ class ChrootEnv:
     def create(
         self,
         suite: str = _DEFAULT_SUITE,
+        repo_set: str = "debian",
         mirror: str = _DEBIAN_MIRROR,
         log_file: Path | None = None,
     ) -> None:
@@ -135,6 +136,7 @@ class ChrootEnv:
             client.create_chroot(
                 root=self._root,
                 suite=suite,
+                repo_set=repo_set,
                 mirror=mirror,
                 log_file=log_file,
             )
@@ -145,6 +147,7 @@ class ChrootEnv:
     def ensure_ready(
         self,
         suite: str = _DEFAULT_SUITE,
+        repo_set: str = "debian",
         mirror: str = _DEBIAN_MIRROR,
         refresh: bool = False,
         log_file: Path | None = None,
@@ -163,7 +166,7 @@ class ChrootEnv:
         if self.exists():
             info(f"convergence: chroot: reusing {self._root}")
         else:
-            self.create(suite=suite, mirror=mirror, log_file=log_file)
+            self.create(suite=suite, repo_set=repo_set, mirror=mirror, log_file=log_file)
 
     # ------------------------------------------------------------------
     # Mount lifecycle
@@ -174,6 +177,7 @@ class ChrootEnv:
         source_repo: Path,
         build_dir: Path,
         logs_dir: Path,
+        build_src: Path | None = None,
     ) -> None:
         """Bind-mount proc/dev/sys/source/build/logs into the chroot.
 
@@ -197,6 +201,7 @@ class ChrootEnv:
                 source_repo=source_repo,
                 build_dir=build_dir,
                 logs_dir=logs_dir,
+                build_src=build_src,
             )
         except PrivilegedHelperError as exc:
             raise ChrootEnvError(str(exc)) from exc

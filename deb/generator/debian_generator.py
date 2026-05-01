@@ -15,6 +15,12 @@ from deb.generator.inter_pkg import (
 )
 from deb.generator.pkg_validator import validate_packages
 from deb.paths import orthos_dir
+from deb.resolution.debian import (
+    resolve_runtime_dependencies,
+    validate_extra_depends,
+    validate_build_depends_str,
+)
+from deb.resolution.oracle import AptOracle, make_oracle
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import info
 
@@ -179,7 +185,7 @@ def _coalesce_to_dirs(
     return result
 
 
-def _gen_build_depends(repo: Path) -> tuple[str, str]:
+def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
     """Return (Build-Depends string, provenance label).
 
     Derives the package list from meson.build dependency() declarations
@@ -202,7 +208,10 @@ def _gen_build_depends(repo: Path) -> tuple[str, str]:
     # Merge base + extras, deduplicated, in stable order.
     base_parts = [p.strip() for p in _BUILD_DEPENDS_BASE.split(",")]
     all_parts = base_parts + [p for p in extra if p not in base_parts]
-    return ", ".join(all_parts), "meson+map"
+    raw_depends = ", ".join(all_parts)
+    validated_depends = validate_build_depends_str(raw_depends, oracle)
+    
+    return validated_depends, "meson+map"
 
 
 # Provenance labels that indicate dh_shlibdeps handles the dep better than
@@ -230,6 +239,7 @@ def _non_elf_runtime_deps(dep_report: Any) -> list[str]:
 def _runtime_dep_state(
     repo: Path,
     orthos: Path,
+    oracle: AptOracle | None = None,
 ) -> tuple[Any, list[str], list[str]]:
     """Infer runtime deps and return report plus emitted/non-emitted lists."""
     stage_dir = orthos / "stage"
@@ -267,13 +277,20 @@ def _runtime_dep_state(
         pkg for pkg in inferred_deps if pkg not in non_elf_deps
     ]
 
-    if non_elf_deps:
-        info(f"emitting explicit runtime deps: {', '.join(non_elf_deps)}")
     if non_emitted_runtime_deps:
         info("leaving to shlibs: "
              f"{', '.join(non_emitted_runtime_deps)}")
 
-    return dep_report, non_elf_deps, non_emitted_runtime_deps
+    # Debian resolution Layer: confirm every explicit runtime dep is a real
+    # package in the selected apt oracle before it reaches debian/control.
+    # ELF-dynamic deps are excluded from non_elf_deps and handled by
+    # ${shlibs:Depends}.
+    verified_deps = resolve_runtime_dependencies(
+        non_elf_deps,
+        oracle=oracle,
+    )
+
+    return dep_report, verified_deps, non_emitted_runtime_deps
 
 
 def _pkg_arch(pkg: dict[str, Any]) -> str:
@@ -350,6 +367,7 @@ def _build_package_layout(
             "long_desc": long_desc,
             "buckets": [],
             "extra_depends": all_extra,
+            "special_files": [],
         })
         install_manifests[app_name] = _coalesce_to_dirs(all_files, app_name)
         return output_packages, install_manifests
@@ -423,6 +441,7 @@ def _build_package_layout(
             "buckets": [bname],
             "extra_depends": extra,
             "is_dev": is_dev,
+            "special_files": [],
         })
         install_manifests[pname] = _coalesce_to_dirs(bucket["files"], app_name,
                                                      all_staged)
@@ -543,12 +562,12 @@ def _check_duplicate_ownership(
     """Abort if any install path is claimed by more than one package.
 
     Builds a mapping of *install glob/path* -> list[package names] and raises
-    ``RuntimeError`` if any entry is owned by more than one package.  This
+    'RuntimeError' if any entry is owned by more than one package.  This
     prevents overlapping file ownership in the generated .deb packages.
 
     Args:
         install_manifests: Mapping of package name to its list of install
-            entries (paths or globs as produced by ``_coalesce_to_dirs``).
+            entries (paths or globs as produced by '_coalesce_to_dirs').
 
     Raises:
         RuntimeError: When one or more install entries appear in multiple
@@ -591,7 +610,7 @@ def _promote_etc_to_primary(
     written, so the correction is transparent to the rest of the generator.
 
     Rules:
-      - Any entry that starts with ``etc/`` or ``etc/*`` is an etc/ file.
+      - Any entry that starts with 'etc/' or 'etc/*' is an etc/ file.
       - Such entries are removed from every secondary package manifest.
       - They are added to the primary package manifest (deduplicated).
       - The primary package manifest is re-sorted for stable output.
@@ -649,11 +668,11 @@ def _promote_app_lib_dirs_to_primary(
     When the classifier places such files in a secondary bucket (e.g. *-other)
     because they lack a clear category signal, dpkg raises a file-overwrite
     conflict if the primary package also installs into the same directory
-    (via a wildcard glob like ``usr/lib/x86_64-linux-gnu/enlightenment/*``).
+    (via a wildcard glob like 'usr/lib/x86_64-linux-gnu/enlightenment/*').
 
     The detection heuristic: an install-manifest entry is considered app-private
-    when, after normalising leading slashes, it starts with ``usr/lib/`` and
-    contains ``/<app_name>/`` as a path-segment pair anywhere in the remaining
+    when, after normalising leading slashes, it starts with 'usr/lib/' and
+    contains '/<app_name>/' as a path-segment pair anywhere in the remaining
     components.  This naturally matches:
 
         usr/lib/x86_64-linux-gnu/enlightenment/modules/appmenu/*
@@ -720,7 +739,7 @@ def _promote_desktop_files_to_primary(
 
     Rules:
       - Any entry whose normalised path matches
-        ``usr/share/applications/*.desktop`` (exact filename) or a glob
+        'usr/share/applications/*.desktop' (exact filename) or a glob
         that covers that directory is a desktop entry.
       - Such entries are removed from every secondary package manifest.
       - They are added to the primary package manifest (deduplicated).
@@ -841,6 +860,7 @@ _MAINTAINER_SCRIPTS = ("postinst", "preinst", "prerm", "postrm")
 
 def _write_maintainer_scripts(
     debian_dir: Path,
+    output_packages: list[dict[str, Any]],
     meta: dict[str, Any],
     write_text_fn: Any,
 ) -> None:
@@ -852,6 +872,47 @@ def _write_maintainer_scripts(
             continue
         script_path = debian_dir / name
         write_text_fn(script_path, content + "\n")
+        script_path.chmod(0o755)
+
+    for pkg in output_packages:
+        pkg_name = pkg["name"]
+        special_files = pkg.get("special_files", [])
+        if not special_files:
+            continue
+
+        lines = [
+            "#!/bin/sh",
+            "set -e",
+            "",
+        ]
+
+        for spec in special_files:
+            path = spec["path"]
+            mode_oct = int(spec["mode_octal"], 8)
+            mode_str = spec["mode_octal"].replace("0o", "")
+            owner = spec["owner"]
+            group = spec["group"]
+
+            import stat
+            if mode_oct & (stat.S_ISUID | stat.S_ISGID):
+                owner = "root"
+                group = "root"
+
+            if owner == "root" and group == "root":
+                lines.append(f"chown root:root {path}")
+            elif owner or group:
+                lines.append(f"chown {owner}:{group} {path}")
+
+            lines.append(f"chmod {mode_str} {path}")
+            info(f"  preserved special permission: {pkg_name} {path} {mode_str} {owner}:{group}")
+
+        lines.append("")
+        lines.append("#DEBHELPER#")
+        lines.append("exit 0")
+        lines.append("")
+
+        script_path = debian_dir / f"{pkg_name}.postinst"
+        write_text_fn(script_path, "\n".join(lines))
         script_path.chmod(0o755)
 
 
@@ -894,9 +955,62 @@ def _write_debian_helpers(
             file_path.chmod(0o755)
 
 
+def _rebuild_special_files(
+    output_packages: list[dict[str, Any]],
+    install_manifests: dict[str, list[str]],
+    plan_buckets: list[dict[str, Any]],
+) -> None:
+    """Reassign special files to output_packages based on final install manifests."""
+    from deb.utils.log import info
+
+    all_specials = []
+    for b in plan_buckets:
+        all_specials.extend(b.get("special_files", []))
+
+    if not all_specials:
+        return
+
+    for pkg in output_packages:
+        pkg["special_files"] = []
+
+    for spec in all_specials:
+        path = spec["path"]  # starts with '/' e.g. '/usr/bin/foo'
+        rel_path = path.lstrip("/")
+
+        assigned = False
+        for pkg in output_packages:
+            pkg_name = pkg["name"]
+            manifest = install_manifests.get(pkg_name, [])
+
+            owns = False
+            for entry in manifest:
+                entry_rel = entry.lstrip("/")
+                if entry_rel.endswith("/*"):
+                    prefix = entry_rel[:-2]
+                    if rel_path.startswith(prefix + "/"):
+                        owns = True
+                        break
+                elif entry_rel == rel_path:
+                    owns = True
+                    break
+
+            if owns:
+                pkg["special_files"].append(spec)
+                assigned = True
+                break
+
+        if not assigned:
+            info(f"warning: no package owns special file {path} after promotions; dropping special permissions")
+
+    for pkg in output_packages:
+        if pkg["special_files"]:
+            pkg["special_files"].sort(key=lambda s: s["path"])
+
+
 # pylint: disable=too-many-locals,too-many-statements
 def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """Generate a debian/ skeleton from the package plan for *meta*.
+
     Returns (exit_code, result_dict).
     """
     repo = Path(meta["repo_path"])
@@ -906,7 +1020,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     orthos = orthos_dir(repo)
     plan_file = orthos / _PLAN_FILE
 
-    plan = _load_plan(plan_file)  # raises FileNotFoundError if missing
+    plan = _load_plan(plan_file)
 
     non_empty = _non_empty_buckets(plan["package_buckets"])
     debian_dir = orthos / "debian"
@@ -927,17 +1041,22 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     info(f"version:    {version}  [{version_source}]")
     info(f"maintainer: {maintainer}")
 
+    # Build oracle once for this run; every dependency validation call must
+    # use the same target apt resolution.
+    oracle = make_oracle(meta.get("_chroot_path"))
+
     dep_report, non_elf_deps, non_emitted_runtime_deps = _runtime_dep_state(
-        repo, orthos)
+        repo,
+        orthos,
+        oracle=oracle,
+    )
 
     primary = _primary_bucket_name(non_empty)
     collapse = _should_collapse(non_empty)
 
-    # Derive Build-Depends from meson scan where possible.
-    build_depends, build_depends_source = _gen_build_depends(repo)
+    build_depends, build_depends_source = _gen_build_depends(repo, oracle)
     info(f"build-depends source: {build_depends_source}")
 
-    # Build package descriptors and install manifests from classified buckets.
     _stage_dir = orthos / "stage"
     output_packages, install_manifests = _build_package_layout(
         app_name,
@@ -950,49 +1069,56 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         dep_report=dep_report,
     )
 
-    # Enforce etc/ policy: files under etc/ must be owned by the primary
-    # package only.  Run before duplicate-ownership check so that any
-    # misclassified etc/ files are corrected rather than rejected.
     primary_pkg_name = _pkg_name(app_name, primary, primary) if primary else app_name
+
+    generated_pkg_names = frozenset(p["name"] for p in output_packages)
+    for pkg in output_packages:
+        pkg["extra_depends"] = validate_extra_depends(
+            pkg.get("extra_depends", []),
+            generated_pkg_names,
+            pkg_label=pkg["name"],
+            oracle=oracle,
+        )
+
     _promote_etc_to_primary(primary_pkg_name, install_manifests)
-    # Enforce app-private lib policy: usr/lib/**/<app>/** belongs to primary.
     _promote_app_lib_dirs_to_primary(app_name, primary_pkg_name, install_manifests)
-    # Enforce desktop-entry policy: usr/share/applications/*.desktop belongs
-    # to the primary package only.
     _promote_desktop_files_to_primary(primary_pkg_name, install_manifests)
 
-    # Validate generated package relationships before writing files.
-    validation = validate_packages(app_name, output_packages)
+    _rebuild_special_files(output_packages, install_manifests, plan["package_buckets"])
 
-    # -- Write debian/ files ----------------------------------------------
+    validation = validate_packages(app_name, output_packages)
 
     write_text(
         debian_dir / "control",
-        _gen_control(app_name, output_packages, maintainer, build_depends))
+        _gen_control(app_name, output_packages, maintainer, build_depends),
+    )
 
     rules_path = debian_dir / "rules"
     rules_overrides = meta.get("rules_overrides", "").strip()
     write_text(rules_path, _gen_rules(rules_overrides))
     rules_path.chmod(0o755)
 
-    write_text(debian_dir / "changelog",
-               _gen_changelog(app_name, version, maintainer))
+    write_text(
+        debian_dir / "changelog",
+        _gen_changelog(app_name, version, maintainer),
+    )
     write_text(source_dir / "format", _gen_source_format())
 
-    # Emit .install files only when multiple packages are generated.
-    # Single-package builds rely on dh_auto_install directly.
     if not collapse:
-        # Guard: abort before writing any file if ownership conflicts exist.
         _check_duplicate_ownership(install_manifests)
         for pkg_info in output_packages:
             pname = pkg_info["name"]
-            write_text(debian_dir / f"{pname}.install",
-                       _gen_install(install_manifests[pname]))
+            write_text(
+                debian_dir / f"{pname}.install",
+                _gen_install(install_manifests[pname]),
+            )
 
-    write_text(debian_dir / "copyright",
-               _gen_copyright(app_name, maintainer, meta))
+    write_text(
+        debian_dir / "copyright",
+        _gen_copyright(app_name, maintainer, meta),
+    )
 
-    _write_maintainer_scripts(debian_dir, meta, write_text)
+    _write_maintainer_scripts(debian_dir, output_packages, meta, write_text)
     _write_lintian_overrides(debian_dir, output_packages, meta, write_text)
     _write_debian_helpers(debian_dir, meta, write_text)
 

@@ -24,9 +24,9 @@ def _classify(rel: Path, abs_path: Path) -> str:
     filesystem structure.  No project-specific paths or names are referenced.
 
     Conservative rule: when classification is uncertain, the file is assigned
-    to ``other`` which maps to the runtime package.
+    to 'other' which maps to the runtime package.
 
-    Returns ``_KIND_DROP`` for files that must not be packaged (.la files).
+    Returns '_KIND_DROP' for files that must not be packaged (.la files).
     """
     parts = rel.parts
     s = str(rel)
@@ -105,7 +105,7 @@ def _classify(rel: Path, abs_path: Path) -> str:
 def _walk_stage(stage_dir: Path) -> list[dict[str, Any]]:
     """Return a sorted list of entry dicts for every file/symlink in *stage_dir*.
 
-    Files classified as ``_KIND_DROP`` (e.g. .la files) are silently omitted
+    Files classified as '_KIND_DROP' (e.g. .la files) are silently omitted
     from the returned list and will not appear in any generated package.
     """
     entries: list[dict[str, Any]] = []
@@ -118,10 +118,31 @@ def _walk_stage(stage_dir: Path) -> list[dict[str, Any]]:
         kind = _classify(rel, abs_path)
         if kind == _KIND_DROP:
             continue  # silently drop; do not package these files
+        import stat as stat_mod
+        import pwd, grp
+
+        stat_result = abs_path.stat()
+        mode = stat_result.st_mode
+        is_special = bool(mode & (stat_mod.S_ISUID | stat_mod.S_ISGID | stat_mod.S_ISVTX))
+
+        try:
+            owner = pwd.getpwuid(stat_result.st_uid).pw_name
+        except KeyError:
+            owner = str(stat_result.st_uid)
+            
+        try:
+            group = grp.getgrgid(stat_result.st_gid).gr_name
+        except KeyError:
+            group = str(stat_result.st_gid)
+
         entries.append({
             "is_symlink": abs_path.is_symlink(),
             "kind": kind,
             "path": "/" + str(rel),
+            "mode_octal": oct(mode & 0o7777),
+            "owner": owner,
+            "group": group,
+            "is_special": is_special,
         })
 
     return entries

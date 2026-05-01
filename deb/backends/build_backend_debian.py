@@ -1,5 +1,6 @@
 """Debian package build backend: build from repo debian/ and retain artifacts."""
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -7,8 +8,10 @@ from typing import Any
 from deb.backends.build_backend_meson import _clean_env
 from deb.debian_clean import clean_debian_build_artifacts
 from deb.paths import orthos_dir
+from deb.resolution.debian import validate_built_debs
+from deb.resolution.oracle import make_oracle
 from deb.utils.fs import ensure_dir, write_json
-from deb.utils.log import info
+from deb.utils.log import error, info
 from deb.utils.shell import run_logged
 
 _RESULT_FILE = "build-result.json"
@@ -167,6 +170,35 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         source_name: str = meta.get("project_name") or repo.name
         artifacts = _retain_artifacts(repo, orthos, source_name)
         _cleanup_transient(orthos)
+
+        # Artifact dependency validation: inspect every retained .deb and
+        # fail the build if any Depends group is not resolvable in the
+        # target apt database.
+        # Generated sibling packages are exempt (they are not in apt yet).
+        deb_artifacts = [p for p in artifacts if p.endswith(".deb")]
+        if deb_artifacts:
+            gen_result_file = orthos / "generate-result.json"
+            generated_pkg_names: frozenset[str] = frozenset()
+            if gen_result_file.exists():
+                try:
+                    gen_result = json.loads(
+                        gen_result_file.read_text(encoding="utf-8"))
+                    generated_pkg_names = frozenset(
+                        gen_result.get("binary_packages", []))
+                except (json.JSONDecodeError, OSError):
+                    pass  # proceed with empty sibling set
+
+            # Select oracle: use the target chroot when available so that
+            # validation uses the target Debian database, not the host's.
+            chroot_path = meta.get("_chroot_path")
+            oracle = make_oracle(chroot_path)
+            info(f"artifact validation oracle: {oracle!r}")
+
+            try:
+                validate_built_debs(deb_artifacts, generated_pkg_names, oracle)
+            except RuntimeError as exc:
+                error(str(exc))
+                ok = False  # treat as build failure
     else:
         artifacts = []
 

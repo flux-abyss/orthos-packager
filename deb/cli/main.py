@@ -126,6 +126,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Debian suite for chroot creation (default: trixie).",
     )
     smoke.add_argument(
+        "--target-repo-set",
+        choices=["debian", "bodhi"],
+        default="debian",
+        help="Target package universe for chroot creation (default: debian).",
+    )
+    smoke.add_argument(
         "--install-host",
         action="store_true",
         default=False,
@@ -323,13 +329,16 @@ def _cmd_classify(repo_path: str) -> int:
     return rc
 
 
-def _cmd_generate(repo_path: str) -> int:
+def _cmd_generate(repo_path: str, chroot_path: str | None = None) -> int:
     """Generate a debian/ skeleton from the package plan."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         error(str(exc))
         return 1
+
+    if chroot_path is not None:
+        meta["_chroot_path"] = chroot_path
 
     try:
         rc, result = run_generate(meta)
@@ -487,18 +496,22 @@ def _partition_debs(debs: list[str]) -> tuple[list[str], list[str]]:
     return main_debs, dbgsym_debs
 
 
-def _run_smoke_prebuild_pipeline(repo_path: str) -> int:
+def _run_smoke_prebuild_pipeline(repo_path: str, chroot_path: str | None = None) -> int:
     """Run scan→generate pipeline for smoke (no apply, no repo/debian requirement)."""
     for step in (
             _cmd_scan,
             _cmd_stage,
             _cmd_inventory,
             _cmd_classify,
-            _cmd_generate,
     ):
         rc = step(repo_path)
         if rc != 0:
             return rc
+            
+    rc = _cmd_generate(repo_path, chroot_path=chroot_path)
+    if rc != 0:
+        return rc
+        
     return 0
 
 
@@ -540,7 +553,9 @@ def copy_generated_debian_to_build_source(
 
 
 def _run_smoke_build_step(
-    build_src: Path, original_orthos: Path
+    build_src: Path,
+    original_orthos: Path,
+    chroot_path: str | None = None,
 ) -> tuple[int, dict[str, Any] | None]:
     """Build from the isolated *build_src* copy and log the outcome.
 
@@ -548,6 +563,11 @@ def _run_smoke_build_step(
     runs inside the isolated copy.  The orthos workspace used for result
     files and artifact storage is still the *original_orthos* directory so
     the caller can find build-result.json in the usual place.
+
+    *chroot_path* is forwarded to the build backend via 'meta['_chroot_path']'
+    so that artifact validation uses the chroot's apt database rather than the
+    host's.  Pass 'None' to fall back to host-scoped validation (with a
+    contamination warning).
 
     Returns (rc, result or None).
     """
@@ -561,6 +581,10 @@ def _run_smoke_build_step(
     # Override the orthos workspace so results land in the original repo's
     # .orthos dir, not inside build-src's (nonexistent) .orthos.
     meta["_orthos_override"] = str(original_orthos)
+    # Forward the target chroot path so artifact validation uses the target
+    # Debian environment (ChrootAptOracle) rather than the host's apt.
+    if chroot_path:
+        meta["_chroot_path"] = chroot_path
 
     try:
         rc, result = run_build(meta)
@@ -665,16 +689,17 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         rc = _run_convergence_loop(repo_path, runner)
     else:
         # Isolated chroot mode: default authoritative path.
-        # The chroot is shared across projects at .orthos/chroots/<suite>-<arch>/
+        # The chroot is shared across projects at .orthos/chroots/<suite>-<repo_set>-<arch>/
         # so that .orthos/<repo>/ contains only user-owned files and can be
         # removed with plain rm -rf without requiring sudo.
         # The convergence build dir is placed under .orthos/chroot-work/ (also
         # outside the project workspace) because Meson runs as root inside the
         # chroot and would leave root-owned files in any bind-mounted directory.
-        chroot_root = shared_chroot_dir(args.chroot_suite)
+        chroot_dir_name = f"{args.chroot_suite}-{args.target_repo_set}"
+        chroot_root = shared_chroot_dir(chroot_dir_name)
         logs_dir = orthos / "logs"
         convergence_build_dir = shared_convergence_build_dir(
-            args.chroot_suite, repo.name
+            chroot_dir_name, repo.name
         )
         ensure_dir(logs_dir)
         ensure_dir(convergence_build_dir)
@@ -684,6 +709,7 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         try:
             env.ensure_ready(
                 suite=args.chroot_suite,
+                repo_set=args.target_repo_set,
                 refresh=args.refresh_chroot,
                 log_file=chroot_log,
             )
@@ -722,7 +748,9 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         return rc
 
     # scan → stage → inventory → classify → generate (no apply)
-    rc = _run_smoke_prebuild_pipeline(repo_path)
+    chroot_dir_name = f"{args.chroot_suite}-{args.target_repo_set}" if hasattr(args, "target_repo_set") else args.chroot_suite
+    _chroot_path = str(shared_chroot_dir(chroot_dir_name)) if not args.host else None
+    rc = _run_smoke_prebuild_pipeline(repo_path, chroot_path=_chroot_path)
     if rc != 0:
         return rc
 
@@ -737,18 +765,97 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     copy_generated_debian_to_build_source(generated_debian, build_src)
 
     # Build from the isolated copy; results go to the original orthos dir.
-    rc, result = _run_smoke_build_step(build_src, orthos)
-    if result is None or not result["success"]:
-        return rc
+    # Forward the chroot path so artifact validation uses the target oracle.
+    if not args.host:
+        import json
+        import shutil
+        from deb.privileged.client import chroot_exec
+        from deb.resolution.oracle import make_oracle
+        from deb.resolution.debian import validate_built_debs
 
-    debs = sorted(p for p in result["artifacts"] if p.endswith(".deb"))
-    if not debs:
-        error("no .deb artifacts found")
-        return 1
+        artifacts_dir = orthos / "artifacts"
+        ensure_dir(artifacts_dir)
+        for p in artifacts_dir.glob("*.deb"):
+            p.unlink()
 
-    info("smoke: build complete")
-    for p in debs:
-        info(f"  artifact: {p}")
+        try:
+            env.setup_mounts(
+                source_repo=repo,
+                build_dir=convergence_build_dir,
+                logs_dir=logs_dir,
+                build_src=build_src,
+            )
+            
+            info("smoke: running dpkg-buildpackage inside chroot")
+            
+            ok, output = chroot_exec(
+                env.root,
+                ["bash", "-c", "cd /orthos/build-src && apt-get update && apt-get build-dep -y ."]
+            )
+            build_log = logs_dir / "smoke-chroot-build.log"
+            build_log.write_text(output, encoding="utf-8")
+            
+            if not ok:
+                error(f"smoke: chroot build-dep failed. see log: {build_log}")
+                return 1
+
+            ok, output2 = chroot_exec(
+                env.root,
+                ["bash", "-c", "cd /orthos/build-src && dpkg-buildpackage -us -uc -b"]
+            )
+            with open(build_log, "a", encoding="utf-8") as f:
+                f.write("\n" + output2)
+                
+            if not ok:
+                error(f"smoke: chroot build failed. see log: {build_log}")
+                return 1
+
+            chroot_orthos = env.root / "orthos"
+            for p in chroot_orthos.glob("*.deb"):
+                dst = artifacts_dir / p.name
+                shutil.copy(str(p), str(dst))
+                
+        finally:
+            env.teardown_mounts()
+            
+        debs = sorted(str(p) for p in artifacts_dir.glob("*.deb"))
+        if not debs:
+            error("no .deb artifacts found in chroot build")
+            return 1
+
+        gen_result_file = orthos / "generate-result.json"
+        generated_pkg_names: frozenset[str] = frozenset()
+        if gen_result_file.exists():
+            try:
+                gen_result = json.loads(gen_result_file.read_text(encoding="utf-8"))
+                generated_pkg_names = frozenset(gen_result.get("binary_packages", []))
+            except Exception:
+                pass
+                
+        oracle = make_oracle(env.root)
+        try:
+            validate_built_debs(debs, generated_pkg_names, oracle)
+        except RuntimeError as exc:
+            error(str(exc))
+            return 1
+            
+        info("smoke: build complete (chroot)")
+        for p in debs:
+            info(f"  artifact: {p}")
+
+    else:
+        rc, result = _run_smoke_build_step(build_src, orthos, chroot_path=None)
+        if result is None or not result["success"]:
+            return rc
+
+        debs = sorted(p for p in result["artifacts"] if p.endswith(".deb"))
+        if not debs:
+            error("no .deb artifacts found")
+            return 1
+
+        info("smoke: build complete (host)")
+        for p in debs:
+            info(f"  artifact: {p}")
 
     if not args.install_host:
         info("smoke: host install skipped (build-only mode)")

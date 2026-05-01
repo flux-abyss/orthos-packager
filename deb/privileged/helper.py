@@ -85,6 +85,8 @@ _CHROOT_EXEC_ALLOWED_COMMANDS: frozenset[str] = frozenset([
     "apt-get",
     "apt-cache",
     "python3",
+    "bash",
+    "dpkg-buildpackage",
 ])
 
 
@@ -378,6 +380,7 @@ def _op_create_chroot(args: dict) -> None:
     root = _validate_chroot_root(Path(args["root"]))
     suite = str(args.get("suite", _DEFAULT_SUITE))
     mirror = str(args.get("mirror", _DEBIAN_MIRROR))
+    repo_set = str(args.get("repo_set", "debian"))
     log_file_path: str | None = args.get("log_file")
 
     root.mkdir(parents=True, exist_ok=True)
@@ -410,36 +413,36 @@ def _op_create_chroot(args: dict) -> None:
             check=True,
         )
 
-        # Step 3: Bodhi apt source (explicit, not copied from host)
-        bodhi_list = root / "etc" / "apt" / "sources.list.d" / "bodhi.list"
-        _log(f"orthos-priv: writing Bodhi source -> {bodhi_list}")
-        if log_fh:
-            log_fh.write(f"\n# Bodhi source injection\n{_BODHI_SOURCE_LINE}\n")
-            log_fh.flush()
-        bodhi_list.parent.mkdir(parents=True, exist_ok=True)
-        bodhi_list.write_text(_BODHI_SOURCE_LINE + "\n", encoding="utf-8")
-
-        # Step 4: Bodhi keyring
-        chroot_keyring_dir = root / "usr" / "share" / "keyrings"
-        if _BODHI_KEYRING_HOST.exists():
-            _log("orthos-priv: copying Bodhi keyring")
+        # Step 3 and 4: Bodhi apt source and keyring (if requested)
+        if repo_set == "bodhi":
+            bodhi_list = root / "etc" / "apt" / "sources.list.d" / "bodhi.list"
+            _log(f"orthos-priv: writing Bodhi source -> {bodhi_list}")
             if log_fh:
-                log_fh.write(f"\n# Bodhi keyring: {_BODHI_KEYRING_HOST}\n")
+                log_fh.write(f"\n# Bodhi source injection\n{_BODHI_SOURCE_LINE}\n")
                 log_fh.flush()
-            chroot_keyring_dir.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                [
-                    "cp",
-                    str(_BODHI_KEYRING_HOST),
-                    str(chroot_keyring_dir / _BODHI_KEYRING_HOST.name),
-                ],
-                check=True,
-            )
-        else:
-            raise RuntimeError(
-                f"Bodhi keyring not found at {_BODHI_KEYRING_HOST}. "
-                "Install bodhi-archive-keyring or ensure the keyring file exists."
-            )
+            bodhi_list.parent.mkdir(parents=True, exist_ok=True)
+            bodhi_list.write_text(_BODHI_SOURCE_LINE + "\n", encoding="utf-8")
+
+            chroot_keyring_dir = root / "usr" / "share" / "keyrings"
+            if _BODHI_KEYRING_HOST.exists():
+                _log("orthos-priv: copying Bodhi keyring")
+                if log_fh:
+                    log_fh.write(f"\n# Bodhi keyring: {_BODHI_KEYRING_HOST}\n")
+                    log_fh.flush()
+                chroot_keyring_dir.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    [
+                        "cp",
+                        str(_BODHI_KEYRING_HOST),
+                        str(chroot_keyring_dir / _BODHI_KEYRING_HOST.name),
+                    ],
+                    check=True,
+                )
+            else:
+                raise RuntimeError(
+                    f"Bodhi keyring not found at {_BODHI_KEYRING_HOST}. "
+                    "Install bodhi-archive-keyring or ensure the keyring file exists."
+                )
 
         # Step 5: apt-get update (picks up Bodhi source)
         _run(
@@ -525,6 +528,8 @@ def _op_setup_mounts(args: dict) -> None:
         _bind(source_repo, root / "orthos" / "source", read_only=True)
         _bind(build_dir, root / "orthos" / "build")
         _bind(logs_dir, root / "orthos" / "logs")
+        if "build_src" in args:
+            _bind(Path(args["build_src"]), root / "orthos" / "build-src")
     except (RuntimeError, ValueError):
         _rollback()
         raise
@@ -829,6 +834,52 @@ def _op_pkgconfig_file_search(args: dict) -> None:
     _ok(chosen)
 
 
+def _op_apt_file_search_absolute_path(args: dict) -> None:
+    """Find the Debian package that owns an absolute path inside *root*."""
+    root = _validate_chroot_root(Path(args["root"]))
+    path = str(args["path"]).strip()
+    
+    # Strip leading slash to match apt-file contents format
+    search_path = path.lstrip("/")
+    
+    _log(f"orthos-priv: apt-file-search-absolute-path: path={search_path!r}")
+    
+    try:
+        _ensure_apt_file(root)
+    except RuntimeError as exc:
+        _log(f"orthos-priv: apt-file-search-absolute-path: {exc} - returning None")
+        _ok(None)
+        return
+
+    # Exact match for the path
+    pattern = f"^{re.escape(search_path)}$"
+    
+    result = subprocess.run(
+        [
+            "chroot", str(root),
+            "apt-file", "search", "--regexp", "--package-only", pattern,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    
+    candidates: list[str] = [
+        line.strip().lower()
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
+    
+    if not candidates:
+        _log(f"orthos-priv: apt-file-search-absolute-path: no provider for {path!r}")
+        _ok(None)
+        return
+        
+    chosen = sorted(candidates)[0]
+    _log(f"orthos-priv: apt-file-search-absolute-path: resolved {path!r} -> {chosen}")
+    _ok(chosen)
+
+
 def _op_pkg_query_version(args: dict) -> None:
     """Return the installed version of *package* inside *root* via dpkg-query.
 
@@ -977,6 +1028,7 @@ _OPERATIONS: dict = {
     "apt-search-dev":             _op_apt_search_dev,
     "pkgconfig-file-search":      _op_pkgconfig_file_search,
     "pkgconfig-modversion":       _op_pkgconfig_modversion,
+    "apt-file-search-absolute-path": _op_apt_file_search_absolute_path,
     "destroy-chroot":             _op_destroy_chroot,
     "reset-chroot":               _op_reset_chroot,
     "destroy-convergence-work":   _op_destroy_convergence_work,

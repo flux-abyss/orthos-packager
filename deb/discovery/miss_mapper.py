@@ -334,6 +334,20 @@ def map_miss_to_package(
     # tool-miss
     # ------------------------------------------------------------------
     if miss.miss_type == "tool-miss":
+        # Handle absolute path tool misses
+        if name.startswith("/"):
+            if runner is not None:
+                pkg = runner.apt_file_search_absolute_path(name)
+                if pkg and pkg.strip().lower() not in _BLOCKED_PACKAGES:
+                    info(f"miss_mapper: apt-file-search-absolute-path resolved {name!r} -> {pkg}")
+                    return pkg.strip().lower()
+                if pkg and pkg.strip().lower() in _BLOCKED_PACKAGES:
+                    info(
+                        f"miss_mapper: apt-file-search-absolute-path returned blocked "
+                        f"package {pkg!r} for {name!r} — skipping"
+                    )
+            return None
+
         # 1. Curated tool map.
         pkg = TOOL_DEP_MAP.get(name)
         if pkg:

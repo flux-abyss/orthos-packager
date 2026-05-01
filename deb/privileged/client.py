@@ -57,6 +57,7 @@ __all__ = [
 def create_chroot(
     root: Path,
     suite: str = "trixie",
+    repo_set: str = "debian",
     mirror: str = "http://deb.debian.org/debian",
     log_file: Path | None = None,
 ) -> None:
@@ -75,6 +76,7 @@ def create_chroot(
     args: dict = {
         "root": str(root),
         "suite": suite,
+        "repo_set": repo_set,
         "mirror": mirror,
     }
     if log_file is not None:
@@ -87,18 +89,22 @@ def setup_mounts(
     source_repo: Path,
     build_dir: Path,
     logs_dir: Path,
+    build_src: Path | None = None,
 ) -> list[Path]:
     """Bind-mount proc/sys/dev/devpts/source/build/logs into *root*.
 
     Returns the list of mounted paths so the caller can store them for
     teardown_mounts(). Raises PrivilegedHelperError on any mount failure.
     """
-    result = invoke("setup-mounts", {
+    args = {
         "root": str(root),
         "source_repo": str(source_repo),
         "build_dir": str(build_dir),
         "logs_dir": str(logs_dir),
-    })
+    }
+    if build_src:
+        args["build_src"] = str(build_src)
+    result = invoke("setup-mounts", args)
     mounted_strs: list[str] = result.get("result") or []
     return [Path(p) for p in mounted_strs]
 
@@ -214,6 +220,19 @@ def pkgconfig_file_search(root: Path, name: str) -> str | None:
     result = invoke("pkgconfig-file-search", {
         "root": str(root),
         "name": name,
+    })
+    val = result.get("result")
+    return str(val) if val else None
+
+
+def apt_file_search_absolute_path(root: Path, path: str) -> str | None:
+    """Return the package that owns the absolute *path* inside *root*, or None.
+    
+    Uses apt-file search inside the chroot.
+    """
+    result = invoke("apt-file-search-absolute-path", {
+        "root": str(root),
+        "path": path,
     })
     val = result.get("result")
     return str(val) if val else None
