@@ -73,10 +73,24 @@ def _resolve_version(meta: dict[str, Any]) -> str:
 def _resolve_maintainer(meta: dict[str, Any]) -> str:
     """Return the maintainer string to embed in generated files.
 
-    Uses meta["maintainer"] when present; falls back to _DEFAULT_MAINTAINER.
+    Uses meta["maintainer"] when present; falls back to configured user identity,
+    then _DEFAULT_MAINTAINER.
     """
     m = meta.get("maintainer") or ""
-    return m.strip() if m.strip() else _DEFAULT_MAINTAINER
+    if m.strip():
+        return m.strip()
+
+    from deb.config import get_maintainer_identity_result
+    res = get_maintainer_identity_result()
+    if res["is_default"]:
+        from deb.utils.log import info
+        if res["reason"] == "invalid-config":
+            info("warning: config file could not be read, using fallback.")
+        else:
+            info("warning: no maintainer configured, using fallback.")
+        info("suggestion: run 'orthos-packager config init' to set your identity.")
+        
+    return res["identity"]
 
 
 def _load_plan(plan_file: Path) -> dict[str, Any]:
