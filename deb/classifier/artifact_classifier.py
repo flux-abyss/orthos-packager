@@ -26,6 +26,17 @@ _KIND_TO_BUCKET: dict[str, str] = {
     "manpage": "doc",
     "data": "data",
     "other": "other",
+    # Semantic kinds added by the app-private / desktop classification pass.
+    # Bucket routing is identical to "other" or "data" — the improvement is
+    # purely in the inventory kind label, not in the package layout.
+    "app-plugin":          "other",
+    "app-ext-metadata":    "other",
+    "app-ext-asset":       "other",
+    "app-helper":          "other",
+    "service-integration": "other",
+    "conffile":            "other",
+    "desktop-launcher":    "data",
+    "session-metadata":    "data",
 }
 
 

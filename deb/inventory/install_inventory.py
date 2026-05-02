@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from deb.classifier.elf_inspect import has_soname
+from deb.classifier.elf_inspect import has_soname, is_elf
 from deb.paths import orthos_dir
 from deb.utils.fs import ensure_dir, write_json
 
@@ -15,8 +15,76 @@ _KIND_DROP = "__drop__"
 _INVENTORY_FILE = "install-inventory.json"
 _STAGE_RESULT_FILE = "stage-result.json"
 
+# Directories at usr/lib/<name>/ that are NOT app-private roots.
+# Checked only when parts[2] has no "-" (i.e. not a multiarch triplet).
+_NON_APP_LIB_DIRS: frozenset[str] = frozenset({
+    "pkgconfig",
+    "debug",
+    "locale",
+    "gconv",
+    "cmake",
+    "systemd",
+})
+# Prefix-based exclusions for parts[2] (no-triplet case) that cannot be
+# expressed as a single exact name.
+_NON_APP_LIB_PREFIXES: tuple[str, ...] = ("python", "perl")
 
-# pylint: disable=too-many-return-statements
+# Asset file suffixes that are unambiguously app-private resources.
+# Conservative set: excludes .xml / .json / .ini for now.
+_APP_ASSET_SUFFIXES: frozenset[str] = frozenset({
+    ".edj", ".png", ".jpg", ".jpeg", ".svg",
+    ".ttf", ".otf", ".kbd", ".dic", ".wav", ".ogg",
+    ".txt", ".cfg",
+})
+
+# Systemd unit file suffixes that indicate service-integration files.
+_SERVICE_SUFFIXES: frozenset[str] = frozenset({
+    ".service", ".socket", ".target", ".timer",
+    ".mount", ".path", ".slice", ".scope",
+})
+
+
+def _is_app_private_lib_path(rel: Path) -> bool:
+    """Return True when *rel* is under an app-private library root.
+
+    Recognised roots:
+      usr/lib/<multiarch-triplet>/<app>/...   (triplet: contains "-")
+      usr/lib/<app>/...                       (direct, non-excluded name)
+      usr/libexec/<app>/...
+
+    Returns False for well-known non-app lib locations (pkgconfig, debug,
+    locale, gconv, cmake, systemd, python*, perl*).
+    """
+    parts = rel.parts
+    if len(parts) < 3:
+        return False
+    if parts[0] != "usr":
+        return False
+
+    if parts[1] == "libexec":
+        # usr/libexec/<app>/... — app dir is parts[2], content at parts[3]+.
+        return len(parts) >= 4
+
+    if parts[1] != "lib":
+        return False
+
+    candidate = parts[2]
+
+    if "-" in candidate:
+        # Looks like a multiarch triplet (e.g. x86_64-linux-gnu).
+        # The app dir is parts[3]; content must be at parts[4]+.
+        return len(parts) >= 5
+
+    # Not a triplet — parts[2] is the app dir itself.
+    # Content must be at parts[3]+, i.e. the file is *inside* the app dir.
+    if candidate in _NON_APP_LIB_DIRS:
+        return False
+    if any(candidate.startswith(p) for p in _NON_APP_LIB_PREFIXES):
+        return False
+    return len(parts) >= 4
+
+
+# pylint: disable=too-many-return-statements,too-many-branches
 def _classify(rel: Path, abs_path: Path) -> str:
     """Return the kind string for *rel* (a path relative to the stage root).
 
@@ -50,37 +118,26 @@ def _classify(rel: Path, abs_path: Path) -> str:
     if rel.suffix == ".a":
         return "dev_lib"
 
-    # --- Shared libraries ----------------------------------------------------
+    # --- Shared libraries (versioned — early exit) ---------------------------
 
     # Versioned shared library: libfoo.so.1 or libfoo.so.1.2.3
     # Detected by the presence of ".so." anywhere in the filename.
     if ".so." in s:
         return "shared_lib"
 
-    # Unversioned *.so: inspect to decide between dev symlink and plugin.
-    if rel.suffix == ".so":
-        if abs_path.is_symlink():
-            # A symlink to a versioned .so is a -dev linker helper.
-            target = abs_path.parent / abs_path.readlink()
-            if ".so." in str(target.name):
-                return "dev_lib"
-        # Not a symlink, or points to something unversioned: treat as a
-        # runtime-loaded plugin/module.  Use SONAME presence as a secondary
-        # signal: a real shared lib that forgot its version suffix will have
-        # a SONAME; a pure plugin typically will not.
-        if has_soname(abs_path):
-            # Carries a SONAME - treat as a shared library (runtime).
-            return "shared_lib"
-        # No SONAME → runtime-loaded object (plugin); goes to runtime as well
-        # so it is never split into a separate dev package by mistake.
-        return "other"
+    # --- Session / desktop launcher metadata (before generic usr/share) ------
 
-    # --- Data files ----------------------------------------------------------
+    if (len(parts) >= 3
+            and parts[0] == "usr" and parts[1] == "share"
+            and rel.suffix == ".desktop"):
+        if parts[2] == "applications":
+            return "desktop-launcher"
+        if parts[2] in ("xsessions", "wayland-sessions"):
+            return "session-metadata"
 
-    # Everything under /usr/share goes to data (includes doc, man, etc.).
+    # --- Generic usr/share data ----------------------------------------------
+
     if len(parts) >= 2 and parts[0] == "usr" and parts[1] == "share":
-        # Distinguish documentation and man pages for finer bucket granularity
-        # while keeping classification path-based and generic.
         if len(parts) >= 3 and parts[2] == "doc":
             return "doc"
         if len(parts) >= 3 and parts[2] == "man":
@@ -89,16 +146,60 @@ def _classify(rel: Path, abs_path: Path) -> str:
 
     # --- Config files --------------------------------------------------------
     if parts and parts[0] == "etc":
-        return "other"  # /etc → runtime (mapped via "other" -> runtime)
+        return "conffile"
 
-    # --- Executables ---------------------------------------------------------
-    if len(parts) >= 2 and parts[0] == "usr" and parts[1] in ("bin", "sbin",
-                                                               "libexec"):
+    # --- Public executables --------------------------------------------------
+    # usr/bin and usr/sbin are always public.
+    if len(parts) >= 2 and parts[0] == "usr" and parts[1] in ("bin", "sbin"):
+        return "binary"
+    # usr/libexec/<name> at exactly depth 3 is a public helper.
+    # Deeper paths (usr/libexec/<app>/...) are handled by app-private rules.
+    if len(parts) == 3 and parts[0] == "usr" and parts[1] == "libexec":
         return "binary"
 
+    # --- Systemd service-integration files -----------------------------------
+    # Must run before app-private lib rules so that systemd unit files
+    # under usr/lib/systemd/ or usr/lib/<triplet>/systemd/ are not
+    # misidentified as app-private content.
+    if rel.suffix in _SERVICE_SUFFIXES:
+        if len(parts) >= 2 and parts[0] == "usr" and parts[1] == "lib":
+            if "systemd" in parts:
+                return "service-integration"
+
+    # --- App-private extension cluster rules ---------------------------------
+
+    if _is_app_private_lib_path(rel):
+        # 1. Extension metadata: .desktop inside an app-private subtree.
+        if rel.suffix == ".desktop":
+            return "app-ext-metadata"
+
+        # 2. Plugin shared object: .so, not a symlink, no SONAME.
+        if rel.suffix == ".so" and not abs_path.is_symlink():
+            if not has_soname(abs_path):
+                return "app-plugin"
+            return "shared_lib"
+
+        # 3. App-private asset files.
+        if rel.suffix in _APP_ASSET_SUFFIXES:
+            return "app-ext-asset"
+
+        # 4. App-private helper executable: no extension, not a symlink, ELF.
+        if rel.suffix == "" and not abs_path.is_symlink() and is_elf(abs_path):
+            return "app-helper"
+
+    # --- Unversioned .so fallback --------------------------------------------
+    if rel.suffix == ".so":
+        if abs_path.is_symlink():
+            target = abs_path.parent / abs_path.readlink()
+            if ".so." in str(target.name):
+                return "dev_lib"
+        if has_soname(abs_path):
+            return "shared_lib"
+        return "other"
+
     # --- Conservative default ------------------------------------------------
-    # All remaining files (including /usr/lib objects that are not .so)
-    # are assigned to "other" which maps to the runtime package bucket.
+    # All remaining files are assigned to "other" which maps to the runtime
+    # package bucket.
     return "other"
 
 
