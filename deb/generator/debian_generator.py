@@ -295,7 +295,7 @@ def _runtime_dep_state(
         info("leaving to shlibs: "
              f"{', '.join(non_emitted_runtime_deps)}")
 
-    # Debian resolution Layer: confirm every explicit runtime dep is a real
+    # Debian resolution layer: confirm every explicit runtime dep is a real
     # package in the selected apt oracle before it reaches debian/control.
     # ELF-dynamic deps are excluded from non_elf_deps and handled by
     # ${shlibs:Depends}.
@@ -325,17 +325,97 @@ _BUCKET_DESCRIPTIONS: dict[str, tuple[str, str]] = {
 }
 
 
+# Bucket-to-section mapping for non-primary, non-GUI packages.
+_BUCKET_SECTION: dict[str, str] = {
+    "dev":     "devel",
+    "doc":     "doc",
+    "runtime": "libs",
+}
+
+
+def _infer_primary_section(plan_buckets: list[dict[str, Any]], meta: dict[str, Any]) -> str:
+    """Infer the primary Debian section from metadata and staged paths.
+
+    Priority:
+      1. meta["section"] override
+      2. desktop/session evidence -> x11
+      3. content-family path evidence -> specific section
+      4. fallback -> misc
+    """
+    override = meta.get("section", "").strip()
+    if override:
+        return override
+
+    all_paths = [
+        path.lstrip("/")
+        for bucket in plan_buckets
+        for path in bucket.get("files", [])
+    ]
+
+    for path in all_paths:
+        if path.endswith(".desktop") and (
+            path.startswith("usr/share/applications/")
+            or path.startswith("usr/share/xsessions/")
+            or path.startswith("usr/share/wayland-sessions/")
+        ):
+            return "x11"
+
+    def has_prefix(prefixes: tuple[str, ...]) -> bool:
+        return any(path.startswith(p) for path in all_paths for p in prefixes)
+
+    if has_prefix(("usr/share/fonts/", "usr/share/fontconfig/")):
+        return "fonts"
+    if has_prefix(("usr/share/sounds/", "usr/share/pulseaudio/", "usr/share/alsa/", "usr/lib/alsa-lib/")):
+        return "sound"
+    if has_prefix(("usr/share/icons/", "usr/share/pixmaps/", "usr/share/wallpapers/", "usr/share/backgrounds/", "usr/share/thumbnailers/")):
+        return "graphics"
+
+    for path in all_paths:
+        parts = Path(path).parts
+        if len(parts) >= 3 and parts[0] == "usr" and parts[1] == "lib":
+            # Detect usr/lib/gstreamer-* or usr/lib/<triplet>/gstreamer-*
+            if parts[2].startswith("gstreamer-") or (len(parts) >= 4 and parts[3].startswith("gstreamer-")):
+                return "video"
+
+    if has_prefix(("usr/share/webext/", "usr/share/javascript/", "usr/share/nginx/", "usr/share/apache2/")):
+        return "web"
+    if has_prefix(("usr/games/", "usr/share/games/")):
+        return "games"
+
+    for path in all_paths:
+        if path.startswith("usr/share/mime/"):
+            return "text"
+        parts = Path(path).parts
+        if len(parts) >= 3 and parts[0] == "usr" and parts[1] == "share" and parts[2].startswith("gtksourceview-"):
+            return "text"
+
+    if has_prefix(("usr/bin/", "usr/sbin/")):
+        return "utils"
+
+    return "misc"
+
+
 def _pkg_descriptions(
     app_name: str,
     bucket_name: str,
     is_primary: bool,
-    meta_short: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Return default short and long descriptions for a package."""
     if is_primary:
-        short = (meta_short.strip()
-                 if meta_short and meta_short.strip() else app_name)
-        long_ = f"Runtime package for {app_name}."
+        short = app_name
+        if meta:
+            if meta.get("description_short"):
+                short = meta["description_short"].strip()
+            elif meta.get("description"):
+                short = meta["description"].strip()
+            if not short:
+                short = app_name
+
+        if meta and meta.get("description_long"):
+            long_ = meta["description_long"]
+        else:
+            long_ = f"Runtime package for {app_name}."
         return short, long_
 
     if bucket_name in _BUCKET_DESCRIPTIONS:
@@ -365,7 +445,7 @@ def _build_package_layout(
     if collapse:
         all_files = _merged_files(non_empty)
         short_desc, long_desc = _pkg_descriptions(
-            app_name, "", is_primary=True, meta_short=meta.get("description"))
+            app_name, "", is_primary=True, meta=meta)
         cmd_deps = script_command_deps(stage_dir, all_files)
         all_extra = list(non_elf_deps)
         for pkg, reason in cmd_deps:
@@ -446,7 +526,7 @@ def _build_package_layout(
             app_name,
             bname,
             is_primary=is_primary,
-            meta_short=meta.get("description") if is_primary else None,
+            meta=meta if is_primary else None,
         )
         output_packages.append({
             "name": pname,
@@ -468,11 +548,13 @@ def _gen_control(
     packages: list[dict[str, Any]],
     maintainer: str,
     build_depends: str,
+    primary_section: str,
+    primary: str | None = None,
 ) -> str:
     """Return debian/control content for the given packages."""
     lines: list[str] = [
         f"Source: {app_name}",
-        "Section: misc",
+        f"Section: {primary_section}",
         "Priority: optional",
         f"Maintainer: {maintainer}",
         f"Build-Depends: {build_depends}",
@@ -493,17 +575,53 @@ def _gen_control(
         depends_parts.extend(pkg.get("extra_depends", []))
         short_desc = pkg.get("short_desc", pkg["name"])
         long_desc = pkg.get("long_desc", f"{app_name} package.")
+        pkg_buckets: list[str] = pkg.get("buckets", [])
+        pkg_bucket = pkg_buckets[0] if pkg_buckets else (primary or "")
+        
+        if pkg_bucket in _BUCKET_SECTION:
+            section = _BUCKET_SECTION[pkg_bucket]
+        elif pkg_bucket in (primary, "data", ""):
+            section = primary_section
+        else:
+            section = "misc"
+
+        long_lines = []
+        for line in long_desc.splitlines():
+            s = line.strip()
+            if not s:
+                long_lines.append(" .")
+            else:
+                long_lines.append(f" {s}")
+        formatted_long_desc = "\n".join(long_lines)
 
         lines += [
             f"Package: {pkg['name']}",
+            f"Section: {section}",
             f"Architecture: {arch}",
             f"Depends: {', '.join(depends_parts)}",
             f"Description: {short_desc}",
-            f" {long_desc}",
+            f"{formatted_long_desc}",
             "",
         ]
 
     return "\n".join(lines)
+
+
+def _gen_meson_configure_override(meson_options: dict[str, str]) -> str:
+    """Return an override_dh_auto_configure stanza for debian/rules.
+
+    Emits '-Dkey=value' flags in sorted key order for determinism.
+    Returns empty string when meson_options is empty.
+    """
+    if not meson_options:
+        return ""
+    flags = " ".join(
+        f"-D{k}={v}" for k, v in sorted(meson_options.items())
+    )
+    return textwrap.dedent(f"""\
+        override_dh_auto_configure:
+        \tdh_auto_configure -- {flags}
+    """)
 
 
 def _gen_rules(rules_overrides: str = "") -> str:
@@ -819,52 +937,118 @@ _LICENSE_MAP: dict[str, tuple[str, str | None]] = {
     "lgpl-3": ("LGPL-3", "LGPL-3"),
     "lgpl-3+": ("LGPL-3+", "LGPL-3"),
     "mit": ("MIT", None),
+    "isc": ("ISC", None),
     "apache-2.0": ("Apache-2.0", None),
-    "bsd-2-clause": ("BSD-2-clause", None),
-    "bsd-3-clause": ("BSD-3-clause", None),
+    "bsd-2-clause": ("BSD-2-Clause", None),
+    "bsd-3-clause": ("BSD-3-Clause", None),
 }
 
 
-def _resolve_license(meta: dict[str, Any]) -> tuple[str, str]:
-    """Return (Debian label, license text line) for the upstream license.
+def _resolve_license(meta: dict[str, Any]) -> str:
+    """Return the normalized Debian license label for the upstream license.
 
-    Tries meta["license"] first.  Falls back to 'unknown' with a placeholder.
+    Normalizes common Meson/SPDX license identifiers before lookup.
+    Falls back to 'unknown' for unrecognized values.
     """
-    raw = (meta.get("license") or "").strip().lower()
-    entry = _LICENSE_MAP.get(raw)
+    raw = (meta.get("license") or "").strip()
+
+    # Conservative normalization: map common Meson/SPDX variants to the
+    # lowercase keys used by _LICENSE_MAP.  Only simple, unambiguous tokens
+    # are mapped; compound SPDX expressions (" OR ", " AND ") are left to
+    # the fallback so we never silently misrepresent the license.
+    _SPDX_ALIASES: dict[str, str] = {
+        "BSD 2 clause":      "bsd-2-clause",
+        "BSD-2-Clause":      "bsd-2-clause",
+        "BSD 3 clause":      "bsd-3-clause",
+        "BSD-3-Clause":      "bsd-3-clause",
+        "GPL-2.0":           "gpl-2",
+        "GPL-2.0-only":      "gpl-2",
+        "GPL-2.0-or-later":  "gpl-2+",
+        "GPL-3.0":           "gpl-3",
+        "GPL-3.0-only":      "gpl-3",
+        "GPL-3.0-or-later":  "gpl-3+",
+        "LGPL-2.1":          "lgpl-2.1",
+        "LGPL-2.1-only":     "lgpl-2.1",
+        "LGPL-2.1-or-later": "lgpl-2.1+",
+        "MIT":               "mit",
+        "ISC":               "isc",
+        "ISC License":       "isc",
+        "Apache-2.0":        "apache-2.0",
+    }
+    normalized = _SPDX_ALIASES.get(raw, raw).lower()
+
+    entry = _LICENSE_MAP.get(normalized)
     if entry:
-        label, common = entry
-        if common:
-            text = f" See /usr/share/common-licenses/{common}."
+        label, _common = entry
+        return label
+    return "unknown"
+
+
+def _format_dep5_license_text(text: str) -> str:
+    """Format a multi-line license body as DEP-5 continuation text.
+
+    Each non-blank line is prefixed with a single space.
+    Blank lines become " .".
+    The result is suitable for embedding directly after a License: field.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.rstrip()
+        if stripped:
+            out.append(f" {stripped}")
         else:
-            text = f" {label} license."
-        return label, text
-    return "unknown", " See upstream source for license terms."
+            out.append(" .")
+    # Remove trailing " ." lines.
+    while out and out[-1] == " .":
+        out.pop()
+    return "\n".join(out)
 
 
 def _gen_copyright(app_name: str, maintainer: str, meta: dict[str, Any]) -> str:
     """Return a DEP-5 debian/copyright with a single Files: * stanza."""
-    upstream_name = meta.get("project_name") or app_name
+    upstream_name = meta.get("upstream_name") or meta.get("project_name") or app_name
+    upstream_contact = meta.get("upstream_contact") or "FIXME"
     source_url = meta.get("source_url") or "FIXME"
     year = datetime.now(timezone.utc).year
-    license_label, license_text = _resolve_license(meta)
+    license_label = _resolve_license(meta)
 
-    return textwrap.dedent(f"""\
+    # Use a real copyright notice when the probe found one; otherwise FIXME.
+    upstream_copyright = (meta.get("upstream_copyright") or "").strip()
+    files_copyright = upstream_copyright or f"{year} FIXME <fixme@example.com>"
+
+    # Use the upstream license body when found; otherwise emit an explicit FIXME.
+    upstream_license_text = (meta.get("upstream_license_text") or "").strip()
+    if upstream_license_text:
+        license_body = _format_dep5_license_text(upstream_license_text)
+    else:
+        license_body = " FIXME: upstream license text not found; human review required."
+
+    header = textwrap.dedent(f"""\
         Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
         Upstream-Name: {upstream_name}
-        Upstream-Contact: FIXME
+        Upstream-Contact: {upstream_contact}
         Source: {source_url}
-
-        Files: *
-        Copyright: {year} FIXME <fixme@example.com>
-        License: {license_label}
-        {license_text}
-
-        Files: debian/*
-        Copyright: {year} {maintainer}
-        License: {license_label}
-        {license_text}
     """)
+
+    files_star = (
+        f"Files: *\n"
+        f"Copyright: {files_copyright}\n"
+        f"License: {license_label}\n"
+    )
+
+    files_debian = (
+        f"Files: debian/*\n"
+        f"Copyright: {year} {maintainer}\n"
+        f"License: {license_label}\n"
+    )
+
+    standalone_license = (
+        f"License: {license_label}\n"
+        f"{license_body}\n"
+    )
+
+    return header + "\n" + files_star + "\n" + files_debian + "\n" + standalone_license
 
 
 # Maintainer script files that may be emitted when content is explicitly
@@ -1102,13 +1286,24 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     validation = validate_packages(app_name, output_packages)
 
+    primary_section = _infer_primary_section(plan["package_buckets"], meta)
+
     write_text(
         debian_dir / "control",
-        _gen_control(app_name, output_packages, maintainer, build_depends),
+        _gen_control(app_name, output_packages, maintainer, build_depends,
+                     primary_section=primary_section, primary=primary),
     )
 
     rules_path = debian_dir / "rules"
     rules_overrides = meta.get("rules_overrides", "").strip()
+    meson_options: dict[str, str] = meta.get("meson_options") or {}
+    configure_override = _gen_meson_configure_override(meson_options)
+    if configure_override:
+        # configure override goes first; existing rules_overrides appended after.
+        combined_overrides = configure_override.rstrip()
+        if rules_overrides:
+            combined_overrides += "\n\n" + rules_overrides
+        rules_overrides = combined_overrides
     write_text(rules_path, _gen_rules(rules_overrides))
     rules_path.chmod(0o755)
 
@@ -1145,6 +1340,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         "debian_dir": str(debian_dir),
         "dep_provenance": dep_report.provenance,
         "emitted_runtime_deps": non_elf_deps,
+        "meson_options": meson_options,
         "non_emitted_runtime_deps": non_emitted_runtime_deps,
         "generated_files": generated,
         "plan_file": str(plan_file),

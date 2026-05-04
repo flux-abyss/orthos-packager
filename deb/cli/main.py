@@ -12,7 +12,8 @@ from deb.apply_debian import apply as run_apply
 from deb.backends.build_backend_debian import build as run_build
 from deb.backends.build_backend_meson import stage as meson_stage
 from deb.classifier.artifact_classifier import classify as run_classify
-from deb.core.repo_probe import probe
+from deb.core.repo_probe import probe as _core_probe
+from deb.discovery.upstream_metadata import probe_upstream_metadata
 from deb.discovery.chroot_env import ChrootEnv, ChrootEnvError
 from deb.discovery.convergence import ConvergenceResult, run_convergence_loop
 from deb.discovery.runner import ChrootRunner, HostRunner, RunnerProtocol
@@ -21,9 +22,22 @@ from deb.inventory.install_inventory import build_inventory
 from deb.privileged import client as priv_client
 from deb.privileged.launcher import PrivilegedHelperError
 from deb.suggest import suggest as run_suggest
-from deb.paths import orthos_dir, shared_chroot_dir, shared_convergence_build_dir
+from deb.paths import orthos_dir, shared_chroot_dir, shared_convergence_build_dir, shared_stage_build_dir
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import error, info
+
+
+def probe(repo_path: str) -> dict[str, Any]:
+    """Probe the repository and merge upstream metadata."""
+    meta = _core_probe(repo_path)
+    try:
+        up_meta = probe_upstream_metadata(Path(meta["repo_path"]))
+        for k, v in up_meta.items():
+            if v:
+                meta[k] = v
+    except OSError:
+        pass
+    return meta
 
 _META_FILE = "package-meta.json"
 
@@ -45,6 +59,14 @@ def _build_parser() -> argparse.ArgumentParser:
     stage.add_argument("repo_path",
                        metavar="PATH",
                        help="Local path to the repository.")
+    stage.add_argument(
+        "--meson-option",
+        metavar="KEY=VALUE",
+        action="append",
+        dest="meson_options",
+        default=[],
+        help="Pass a Meson option as KEY=VALUE (may be repeated).",
+    )
 
     inventory = sub.add_parser("inventory",
                                help="Inventory the staged install tree.")
@@ -63,6 +85,14 @@ def _build_parser() -> argparse.ArgumentParser:
     generate.add_argument("repo_path",
                           metavar="PATH",
                           help="Local path to the repository.")
+    generate.add_argument(
+        "--meson-option",
+        metavar="KEY=VALUE",
+        action="append",
+        dest="meson_options",
+        default=[],
+        help="Pass a Meson option as KEY=VALUE (may be repeated).",
+    )
 
     apply_p = sub.add_parser(
         "apply", help="Materialize generated debian/ into the source repo.")
@@ -78,6 +108,14 @@ def _build_parser() -> argparse.ArgumentParser:
     build_p.add_argument("repo_path",
                          metavar="PATH",
                          help="Local path to the repository.")
+    build_p.add_argument(
+        "--meson-option",
+        metavar="KEY=VALUE",
+        action="append",
+        dest="meson_options",
+        default=[],
+        help="Pass a Meson option as KEY=VALUE (may be repeated).",
+    )
 
     analyze_p = sub.add_parser("analyze",
                                help="Analyze the last build result and log.")
@@ -142,6 +180,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "to install the packages on the current host."
         ),
     )
+    smoke.add_argument(
+        "--meson-option",
+        metavar="KEY=VALUE",
+        action="append",
+        dest="meson_options",
+        default=[],
+        help="Pass a Meson option as KEY=VALUE (may be repeated).",
+    )
 
     reset_chroot_p = sub.add_parser(
         "reset-chroot",
@@ -170,6 +216,34 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _parse_meson_options(raw: list[str]) -> dict[str, str]:
+    """Validate and parse --meson-option KEY=VALUE entries.
+
+    Each entry must contain exactly one '=', a non-empty key composed only of
+    letters, digits, underscores, dashes, and dots, and a non-empty value.
+    Raises SystemExit with a clear message on the first malformed entry.
+    """
+    import re
+    _KEY_RE = re.compile(r'^[A-Za-z0-9_.\-]+$')
+    result: dict[str, str] = {}
+    for entry in raw:
+        if entry.count("=") != 1:
+            error(f"--meson-option: expected KEY=VALUE, got {entry!r}")
+            sys.exit(1)
+        key, value = entry.split("=", 1)
+        if not key:
+            error(f"--meson-option: empty key in {entry!r}")
+            sys.exit(1)
+        if not value:
+            error(f"--meson-option: empty value in {entry!r}")
+            sys.exit(1)
+        if not _KEY_RE.match(key):
+            error(f"--meson-option: invalid key {key!r} (use letters/digits/_-.only)")
+            sys.exit(1)
+        result[key] = value
+    return result
 
 
 def _cmd_scan(repo_path: str) -> int:
@@ -209,13 +283,16 @@ def _cmd_scan(repo_path: str) -> int:
     return 0
 
 
-def _cmd_stage(repo_path: str) -> int:
+def _cmd_stage(repo_path: str, meson_options: dict[str, str] | None = None) -> int:
     """Run the Meson staging pipeline for a repository."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         error(str(exc))
         return 1
+
+    if meson_options:
+        meta["meson_options"] = meson_options
 
     info(f"staging: {meta['repo_path']}")
     info("running meson setup …")
@@ -339,7 +416,11 @@ def _cmd_classify(repo_path: str) -> int:
     return rc
 
 
-def _cmd_generate(repo_path: str, chroot_path: str | None = None) -> int:
+def _cmd_generate(
+    repo_path: str,
+    chroot_path: str | None = None,
+    meson_options: dict[str, str] | None = None,
+) -> int:
     """Generate a debian/ skeleton from the package plan."""
     try:
         meta = probe(repo_path)
@@ -349,6 +430,8 @@ def _cmd_generate(repo_path: str, chroot_path: str | None = None) -> int:
 
     if chroot_path is not None:
         meta["_chroot_path"] = chroot_path
+    if meson_options:
+        meta["meson_options"] = meson_options
 
     try:
         rc, result = run_generate(meta)
@@ -418,13 +501,16 @@ def _cmd_apply(repo_path: str, force: bool = False) -> int:
     return 0
 
 
-def _cmd_build(repo_path: str) -> int:
+def _cmd_build(repo_path: str, meson_options: dict[str, str] | None = None) -> int:
     """Run dpkg-buildpackage using repo/debian."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         error(str(exc))
         return 1
+
+    if meson_options:
+        meta["meson_options"] = meson_options
 
     try:
         rc, result = run_build(meta)
@@ -449,7 +535,11 @@ def _cmd_build(repo_path: str) -> int:
     return rc
 
 
-def _run_convergence_loop(repo_path: str, runner: RunnerProtocol) -> int:
+def _run_convergence_loop(
+    repo_path: str,
+    runner: RunnerProtocol,
+    meson_options: dict[str, str] | None = None,
+) -> int:
     """Run the convergence scaffold via *runner* and log the outcome.
 
     Returns:
@@ -457,7 +547,9 @@ def _run_convergence_loop(repo_path: str, runner: RunnerProtocol) -> int:
       1 - apt install failed inside the loop (fatal; smoke must stop)
     """
     repo = Path(repo_path)
-    result: ConvergenceResult = run_convergence_loop(repo, runner=runner)
+    result: ConvergenceResult = run_convergence_loop(
+        repo, runner=runner, meson_options=meson_options
+    )
 
     info(f"convergence: {result.passes} pass(es) completed "
          f"(mode={result.runner_mode}, scope={result.isolation_scope})")
@@ -506,22 +598,190 @@ def _partition_debs(debs: list[str]) -> tuple[list[str], list[str]]:
     return main_debs, dbgsym_debs
 
 
-def _run_smoke_prebuild_pipeline(repo_path: str, chroot_path: str | None = None) -> int:
-    """Run scan→generate pipeline for smoke (no apply, no repo/debian requirement)."""
-    for step in (
-            _cmd_scan,
-            _cmd_stage,
-            _cmd_inventory,
-            _cmd_classify,
-    ):
+def _run_smoke_prebuild_pipeline(
+    repo_path: str,
+    chroot_path: str | None = None,
+    meson_options: dict[str, str] | None = None,
+    skip_stage: bool = False,
+) -> int:
+    """Run scan→generate pipeline for smoke (no apply, no repo/debian requirement).
+
+    When *skip_stage* is True, the _cmd_stage step is omitted (used in chroot
+    mode where staging already ran inside the chroot via _run_chroot_stage).
+    """
+    scan_rc = _cmd_scan(repo_path)
+    if scan_rc != 0:
+        return scan_rc
+
+    if not skip_stage:
+        stage_rc = _cmd_stage(repo_path, meson_options=meson_options)
+        if stage_rc != 0:
+            return stage_rc
+
+    for step in (_cmd_inventory, _cmd_classify):
         rc = step(repo_path)
         if rc != 0:
             return rc
-            
-    rc = _cmd_generate(repo_path, chroot_path=chroot_path)
+
+    rc = _cmd_generate(repo_path, chroot_path=chroot_path, meson_options=meson_options)
     if rc != 0:
         return rc
-        
+
+    return 0
+
+
+def _run_chroot_stage(
+    env: "ChrootEnv",
+    repo: Path,
+    orthos: Path,
+    stage_build_dir: Path,
+    logs_dir: Path,
+    meson_options: dict[str, str] | None = None,
+) -> int:
+    """Run Meson setup/compile/install inside the chroot for the staging phase.
+
+    Mount layout (reuses setup_mounts with stage_build_dir as build_dir):
+      /orthos/source  -> repo           (read-only source bind)
+      /orthos/build   -> stage_build_dir (writable Meson build tree)
+      /orthos/logs    -> logs_dir
+
+    meson install uses DESTDIR=/orthos/build/destdir so the staged tree lands
+    inside stage_build_dir/destdir on the host.  After mount teardown the CLI
+    copies that tree to orthos/stage so inventory/classify can walk it.
+
+    Returns 0 on success, 1 on any failure.
+    """
+    from deb.privileged.client import chroot_exec
+
+    meson_option_flags = [
+        f"-D{k}={v}" for k, v in sorted((meson_options or {}).items())
+    ]
+    stage_log = logs_dir / "smoke-chroot-stage.log"
+    stage_log.write_text("", encoding="utf-8")
+
+    # Remove any stale stage-result.json from a previous host-mode run so
+    # inventory/classify cannot see an outdated failure record.
+    stale_result = orthos / "stage-result.json"
+    if stale_result.exists():
+        stale_result.unlink()
+
+    # Determine whether the stage build dir already contains a Meson build tree.
+    # --wipe is only valid for an already-configured build directory; on a fresh
+    # dir some Meson versions reject it.
+    _coredata = stage_build_dir / "meson-private" / "coredata.dat"
+    _already_configured = _coredata.exists()
+
+    if not _already_configured:
+        # Ensure a clean, empty staging build dir before mounting.
+        if stage_build_dir.exists():
+            shutil.rmtree(stage_build_dir)
+        stage_build_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        env.setup_mounts(
+            source_repo=repo,
+            build_dir=stage_build_dir,
+            logs_dir=logs_dir,
+        )
+    except ChrootEnvError as exc:
+        error(f"smoke: chroot stage mount failed: {exc}")
+        return 1
+
+    ok = True
+    output = ""
+    failure_step = ""
+
+    try:
+        # Build the meson setup command; include --wipe only when reconfiguring.
+        if _already_configured:
+            setup_cmd = [
+                "meson", "setup", "--wipe",
+                "/orthos/build",
+                "/orthos/source",
+                "--prefix=/usr",
+                "--sysconfdir=/etc",
+                "--localstatedir=/var",
+                "--libdir=lib/x86_64-linux-gnu",
+                *meson_option_flags,
+            ]
+        else:
+            setup_cmd = [
+                "meson", "setup",
+                "/orthos/build",
+                "/orthos/source",
+                "--prefix=/usr",
+                "--sysconfdir=/etc",
+                "--localstatedir=/var",
+                "--libdir=lib/x86_64-linux-gnu",
+                *meson_option_flags,
+            ]
+        info("smoke: chroot stage - meson setup")
+        ok, output = chroot_exec(env.root, setup_cmd)
+        stage_log.write_text(output, encoding="utf-8")
+        if not ok:
+            failure_step = "meson setup"
+
+        if ok:
+            compile_cmd = ["meson", "compile", "-C", "/orthos/build"]
+            info("smoke: chroot stage - meson compile")
+            ok, output = chroot_exec(env.root, compile_cmd)
+            with stage_log.open("a", encoding="utf-8") as fh:
+                fh.write("\n" + output)
+            if not ok:
+                failure_step = "meson compile"
+
+        if ok:
+            # meson install needs DESTDIR; pass via bash -c to set env inline.
+            install_cmd = [
+                "bash", "-c",
+                "DESTDIR=/orthos/build/destdir meson install -C /orthos/build",
+            ]
+            info("smoke: chroot stage - meson install")
+            ok, output = chroot_exec(env.root, install_cmd)
+            with stage_log.open("a", encoding="utf-8") as fh:
+                fh.write("\n" + output)
+            if not ok:
+                failure_step = "meson install"
+
+    finally:
+        env.teardown_mounts()
+
+    if not ok:
+        error(f"smoke: chroot stage failed at: {failure_step}. see log: {stage_log}")
+        return 1
+
+    # Copy staged tree from stage_build_dir/destdir to orthos/stage.
+    # Files are root-owned but world-readable; shutil.copytree can read them.
+    destdir_host = stage_build_dir / "destdir"
+    stage_target = orthos / "stage"
+
+    if not destdir_host.exists():
+        error(f"smoke: chroot stage produced no DESTDIR at {destdir_host}")
+        return 1
+
+    if stage_target.exists():
+        shutil.rmtree(stage_target)
+
+    try:
+        shutil.copytree(str(destdir_host), str(stage_target), symlinks=True)
+    except OSError as exc:
+        error(f"smoke: failed to copy staged tree to {stage_target}: {exc}")
+        return 1
+
+    info(f"smoke: chroot stage complete - staged tree at {stage_target}")
+
+    # Write a fresh stage-result.json so inventory/classify see a successful
+    # stage rather than any stale record from a previous host-mode run.
+    write_json(orthos / "stage-result.json", {
+        "build_dir": str(stage_build_dir),
+        "log_file": str(stage_log),
+        "project_name": repo.name,
+        "repo_path": str(repo),
+        "stage_dir": str(stage_target),
+        "success": True,
+        "version": "",
+    })
+
     return 0
 
 
@@ -691,12 +951,13 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     repo_path = args.repo_path
     repo = Path(repo_path)
     orthos = orthos_dir(repo)
+    _meson_options = _parse_meson_options(getattr(args, "meson_options", []))
 
     if args.host:
         # Pre-isolation host mode: explicit opt-in.
         info("convergence: mode = host (pre-isolation; --host flag set)")
         runner: RunnerProtocol = HostRunner()
-        rc = _run_convergence_loop(repo_path, runner)
+        rc = _run_convergence_loop(repo_path, runner, meson_options=_meson_options or None)
     else:
         # Isolated chroot mode: default authoritative path.
         # The chroot is shared across projects at .orthos/chroots/<suite>-<repo_set>-<arch>/
@@ -741,7 +1002,7 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         try:
             runner = ChrootRunner(env)
             info(f"convergence: mode = chroot ({chroot_root})")
-            rc = _run_convergence_loop(repo_path, runner)
+            rc = _run_convergence_loop(repo_path, runner, meson_options=_meson_options or None)
         finally:
             # Primary cleanup guarantee: always teardown mounts.
             env.teardown_mounts()
@@ -749,18 +1010,37 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         if rc != 0:
             return rc
 
-        info(
-            "smoke: convergence ran in chroot - "
-            "stage/build pipeline runs on host in this round"
+        info("smoke: convergence and staging run in chroot target environment")
+
+        # Stage inside the chroot using a separate build dir to avoid
+        # clobbering the convergence build state.
+        chroot_dir_name_stage = f"{args.chroot_suite}-{args.target_repo_set}"
+        stage_build_dir = shared_stage_build_dir(chroot_dir_name_stage, repo.name)
+        ensure_dir(stage_build_dir)
+
+        rc = _run_chroot_stage(
+            env,
+            repo,
+            orthos,
+            stage_build_dir,
+            logs_dir,
+            meson_options=_meson_options or None,
         )
+        if rc != 0:
+            return rc
 
     if rc != 0:
         return rc
 
-    # scan → stage → inventory → classify → generate (no apply)
+    # scan → (stage already done in chroot if not host) → inventory → classify → generate
     chroot_dir_name = f"{args.chroot_suite}-{args.target_repo_set}" if hasattr(args, "target_repo_set") else args.chroot_suite
     _chroot_path = str(shared_chroot_dir(chroot_dir_name)) if not args.host else None
-    rc = _run_smoke_prebuild_pipeline(repo_path, chroot_path=_chroot_path)
+    rc = _run_smoke_prebuild_pipeline(
+        repo_path,
+        chroot_path=_chroot_path,
+        meson_options=_meson_options if _meson_options else None,
+        skip_stage=not args.host,
+    )
     if rc != 0:
         return rc
 
@@ -787,6 +1067,22 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         ensure_dir(artifacts_dir)
         for p in artifacts_dir.glob("*.deb"):
             p.unlink()
+
+        # Load expected package names before building so we can filter the
+        # artifact copy.  Compute the full allowed set (base names + dbgsym).
+        gen_result_file = orthos / "generate-result.json"
+        generated_pkg_names: frozenset[str] = frozenset()
+        if gen_result_file.exists():
+            try:
+                gen_result = json.loads(gen_result_file.read_text(encoding="utf-8"))
+                generated_pkg_names = frozenset(gen_result.get("binary_packages", []))
+            except Exception:
+                pass
+
+        _allowed_pkg_names: frozenset[str] = frozenset(
+            {n for n in generated_pkg_names}
+            | {f"{n}-dbgsym" for n in generated_pkg_names}
+        )
 
         try:
             env.setup_mounts(
@@ -822,6 +1118,11 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
 
             chroot_orthos = env.root / "orthos"
             for p in chroot_orthos.glob("*.deb"):
+                # Derive the binary package name: "pkg_ver_arch.deb" -> "pkg"
+                pkg_name = p.name.split("_")[0]
+                if _allowed_pkg_names and pkg_name not in _allowed_pkg_names:
+                    info(f"smoke: skipping unrelated artifact: {p.name}")
+                    continue
                 dst = artifacts_dir / p.name
                 shutil.copy(str(p), str(dst))
                 
@@ -830,18 +1131,13 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
             
         debs = sorted(str(p) for p in artifacts_dir.glob("*.deb"))
         if not debs:
-            error("no .deb artifacts found in chroot build")
+            _expected = ", ".join(sorted(_allowed_pkg_names)) or "(unknown)"
+            error(
+                f"smoke: no matching .deb artifacts found in {chroot_orthos}. "
+                f"expected packages: {_expected}"
+            )
             return 1
 
-        gen_result_file = orthos / "generate-result.json"
-        generated_pkg_names: frozenset[str] = frozenset()
-        if gen_result_file.exists():
-            try:
-                gen_result = json.loads(gen_result_file.read_text(encoding="utf-8"))
-                generated_pkg_names = frozenset(gen_result.get("binary_packages", []))
-            except Exception:
-                pass
-                
         oracle = make_oracle(env.root)
         try:
             validate_built_debs(debs, generated_pkg_names, oracle)
@@ -1071,12 +1367,21 @@ def main() -> None:
 
     handlers = {
         "scan": lambda: _cmd_scan(args.repo_path),
-        "stage": lambda: _cmd_stage(args.repo_path),
+        "stage": lambda: _cmd_stage(
+            args.repo_path,
+            meson_options=_parse_meson_options(getattr(args, "meson_options", [])) or None,
+        ),
         "inventory": lambda: _cmd_inventory(args.repo_path),
         "classify": lambda: _cmd_classify(args.repo_path),
-        "generate": lambda: _cmd_generate(args.repo_path),
+        "generate": lambda: _cmd_generate(
+            args.repo_path,
+            meson_options=_parse_meson_options(getattr(args, "meson_options", [])) or None,
+        ),
         "apply": lambda: _cmd_apply(args.repo_path, force=getattr(args, "force", False)),
-        "build": lambda: _cmd_build(args.repo_path),
+        "build": lambda: _cmd_build(
+            args.repo_path,
+            meson_options=_parse_meson_options(getattr(args, "meson_options", [])) or None,
+        ),
         "analyze": lambda: _cmd_analyze(args.repo_path),
         "suggest": lambda: _cmd_suggest(args.repo_path),
         "smoke": lambda: _cmd_smoke(args),

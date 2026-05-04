@@ -158,6 +158,9 @@ def stage(meta: dict[str, Any], runner: "RunnerProtocol | None" = None) -> tuple
 
     clean = _clean_env()
 
+    meson_options: dict[str, str] = meta.get("meson_options") or {}
+    meson_option_flags = [f"-D{k}={v}" for k, v in sorted(meson_options.items())]
+
     ok, _ = run_logged(
         [
             "meson",
@@ -168,6 +171,7 @@ def stage(meta: dict[str, Any], runner: "RunnerProtocol | None" = None) -> tuple
             "--sysconfdir=/etc",
             "--localstatedir=/var",
             "--libdir=lib/x86_64-linux-gnu",
+            *meson_option_flags,
         ],
         log_file=log_file,
         env=clean,

@@ -224,11 +224,15 @@ def _write_result(orthos: Path, result: ConvergenceResult) -> None:
 def run_convergence_loop(
     repo: Path,
     runner: RunnerProtocol | None = None,
+    meson_options: dict[str, str] | None = None,
 ) -> ConvergenceResult:
     """Run the convergence loop for *repo* using *runner*.
 
     When *runner* is None, a HostRunner is constructed (backward-compatible
     behavior - identical to the pre-isolation host-based round).
+
+    *meson_options* is a dict of KEY->VALUE pairs forwarded to every meson
+    setup invocation as -DKEY=VALUE flags (sorted by key for determinism).
 
     Pass 1: Resolve static Meson hints, install seed packages via runner.
     Pass 2+: Run meson setup via runner, classify misses, map to packages,
@@ -239,6 +243,10 @@ def run_convergence_loop(
     """
     if runner is None:
         runner = HostRunner()
+
+    _meson_option_flags = [
+        f"-D{k}={v}" for k, v in sorted((meson_options or {}).items())
+    ]
 
     orthos = orthos_dir(repo)
     logs_dir = orthos / "logs"
@@ -335,7 +343,8 @@ def run_convergence_loop(
             "meson", "setup",
             runner.meson_source_path(repo),
             runner.meson_build_path(build_dir),
-          *_MESON_FLAGS,
+            *_MESON_FLAGS,
+            *_meson_option_flags,
         ]
 
         info(f"convergence: pass {pass_num} - running meson setup "
