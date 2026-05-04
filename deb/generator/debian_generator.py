@@ -1,8 +1,6 @@
 """Generate a minimal debian/ skeleton from a package-plan.json."""
 
 import json
-import textwrap
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +12,12 @@ from deb.generator.inter_pkg import (
     synthesize_intra_deps,
 )
 from deb.generator.pkg_validator import validate_packages
+from deb.generator.rules import _gen_meson_configure_override, _gen_rules
+from deb.generator.changelog import _gen_changelog
+from deb.generator.source import _gen_source_format
+from deb.generator.copyright import _gen_copyright, _resolve_license
+from deb.generator.maintainer_scripts import _write_maintainer_scripts
+from deb.generator.lintian import _write_lintian_overrides
 from deb.paths import orthos_dir
 from deb.resolution.debian import (
     resolve_runtime_dependencies,
@@ -30,7 +34,6 @@ _RESULT_FILE = "generate-result.json"
 _DEFAULT_MAINTAINER = "Unknown Maintainer <fixme@example.com>"
 # Baseline build tools always required by the current packaging flow.
 _BUILD_DEPENDS_BASE = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
-_DEBIAN_REVISION = "1"
 _VERSION_FALLBACK = "0.1.0"
 
 # The bucket that carries the main executable.
@@ -607,80 +610,12 @@ def _gen_control(
     return "\n".join(lines)
 
 
-def _gen_meson_configure_override(meson_options: dict[str, str]) -> str:
-    """Return an override_dh_auto_configure stanza for debian/rules.
-
-    Emits '-Dkey=value' flags in sorted key order for determinism.
-    Returns empty string when meson_options is empty.
-    """
-    if not meson_options:
-        return ""
-    flags = " ".join(
-        f"-D{k}={v}" for k, v in sorted(meson_options.items())
-    )
-    return textwrap.dedent(f"""\
-        override_dh_auto_configure:
-        \tdh_auto_configure -- {flags}
-    """)
+# _gen_meson_configure_override and _gen_rules are in deb.generator.rules
+# (imported above)
 
 
-def _gen_rules(rules_overrides: str = "") -> str:
-    """Return debian/rules with optional override content appended.
-
-    Always includes override_dh_shlibdeps with --ignore-missing-info so that
-    dpkg-shlibdeps does not emit fabricated Debian package names derived from
-    host-local shlibs registrations (e.g. a custom EFL build that registers
-    'libefl' in the host dpkg database).  Without this, dh_shlibdeps would
-    write shlibs:Depends=libefl (>= X.Y.Z) into the substvars file, producing
-    a Depends entry that does not exist on the target Debian system.
-
-    --ignore-missing-info silently skips any library whose shlibs data is
-    absent from the dpkg database rather than fabricating an entry.  When the
-    package is built inside a proper Debian chroot (where target libraries are
-    registered with correct Debian package names), those entries flow through
-    correctly and the override has no negative effect.
-    """
-    # The shlibdeps override is unconditional: it is harmless when building
-    # against genuine Debian libraries and essential when building on a host
-    # that has non-Debian libraries installed.
-    _SHLIBDEPS_OVERRIDE = textwrap.dedent("""\
-        override_dh_shlibdeps:
-        \tdh_shlibdeps -- --ignore-missing-info
-    """)
-    base = textwrap.dedent("""\
-        #!/usr/bin/make -f
-
-        %:
-        \tdh $@
-    """)
-    result = base + "\n" + _SHLIBDEPS_OVERRIDE
-    extra = rules_overrides.strip()
-    if extra:
-        result += "\n" + extra + "\n"
-    return result
-
-
-def _now_rfc2822() -> str:
-    """Return current UTC time formatted for Debian changelog."""
-    return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
-
-
-def _gen_changelog(app_name: str, version: str, maintainer: str) -> str:
-    """Return the full text of debian/changelog."""
-    now = _now_rfc2822()
-    deb_version = f"{version}-{_DEBIAN_REVISION}"
-    return textwrap.dedent(f"""\
-        {app_name} ({deb_version}) unstable; urgency=medium
-
-          * Initial release.
-
-         -- {maintainer}  {now}
-    """)
-
-
-def _gen_source_format() -> str:
-    """Return the full text of debian/source/format."""
-    return "3.0 (quilt)\n"
+# _now_rfc2822 and _gen_changelog are in deb.generator.changelog (imported above)
+# _gen_source_format is in deb.generator.source (imported above)
 
 
 def _gen_install(files: list[str]) -> str:
@@ -924,213 +859,15 @@ def _promote_desktop_files_to_primary(
         install_manifests[primary_pkg] = sorted(primary_entries)
 
 
-# Maps SPDX-ish identifiers (lowercase) to (Debian label, common-licenses path or None).
-_LICENSE_MAP: dict[str, tuple[str, str | None]] = {
-    "gpl-2": ("GPL-2", "GPL-2"),
-    "gpl-2+": ("GPL-2+", "GPL-2"),
-    "gpl-3": ("GPL-3", "GPL-3"),
-    "gpl-3+": ("GPL-3+", "GPL-3"),
-    "lgpl-2": ("LGPL-2", "LGPL-2"),
-    "lgpl-2+": ("LGPL-2+", "LGPL-2"),
-    "lgpl-2.1": ("LGPL-2.1", "LGPL-2.1"),
-    "lgpl-2.1+": ("LGPL-2.1+", "LGPL-2.1"),
-    "lgpl-3": ("LGPL-3", "LGPL-3"),
-    "lgpl-3+": ("LGPL-3+", "LGPL-3"),
-    "mit": ("MIT", None),
-    "isc": ("ISC", None),
-    "apache-2.0": ("Apache-2.0", None),
-    "bsd-2-clause": ("BSD-2-Clause", None),
-    "bsd-3-clause": ("BSD-3-Clause", None),
-}
+# _LICENSE_MAP, _resolve_license, _format_dep5_license_text, _gen_copyright
+# are in deb.generator.copyright (imported above)
 
 
-def _resolve_license(meta: dict[str, Any]) -> str:
-    """Return the normalized Debian license label for the upstream license.
-
-    Normalizes common Meson/SPDX license identifiers before lookup.
-    Falls back to 'unknown' for unrecognized values.
-    """
-    raw = (meta.get("license") or "").strip()
-
-    # Conservative normalization: map common Meson/SPDX variants to the
-    # lowercase keys used by _LICENSE_MAP.  Only simple, unambiguous tokens
-    # are mapped; compound SPDX expressions (" OR ", " AND ") are left to
-    # the fallback so we never silently misrepresent the license.
-    _SPDX_ALIASES: dict[str, str] = {
-        "BSD 2 clause":      "bsd-2-clause",
-        "BSD-2-Clause":      "bsd-2-clause",
-        "BSD 3 clause":      "bsd-3-clause",
-        "BSD-3-Clause":      "bsd-3-clause",
-        "GPL-2.0":           "gpl-2",
-        "GPL-2.0-only":      "gpl-2",
-        "GPL-2.0-or-later":  "gpl-2+",
-        "GPL-3.0":           "gpl-3",
-        "GPL-3.0-only":      "gpl-3",
-        "GPL-3.0-or-later":  "gpl-3+",
-        "LGPL-2.1":          "lgpl-2.1",
-        "LGPL-2.1-only":     "lgpl-2.1",
-        "LGPL-2.1-or-later": "lgpl-2.1+",
-        "MIT":               "mit",
-        "ISC":               "isc",
-        "ISC License":       "isc",
-        "Apache-2.0":        "apache-2.0",
-    }
-    normalized = _SPDX_ALIASES.get(raw, raw).lower()
-
-    entry = _LICENSE_MAP.get(normalized)
-    if entry:
-        label, _common = entry
-        return label
-    return "unknown"
+# _MAINTAINER_SCRIPTS and _write_maintainer_scripts are in
+# deb.generator.maintainer_scripts (imported above)
 
 
-def _format_dep5_license_text(text: str) -> str:
-    """Format a multi-line license body as DEP-5 continuation text.
-
-    Each non-blank line is prefixed with a single space.
-    Blank lines become " .".
-    The result is suitable for embedding directly after a License: field.
-    """
-    lines = text.splitlines()
-    out: list[str] = []
-    for line in lines:
-        stripped = line.rstrip()
-        if stripped:
-            out.append(f" {stripped}")
-        else:
-            out.append(" .")
-    # Remove trailing " ." lines.
-    while out and out[-1] == " .":
-        out.pop()
-    return "\n".join(out)
-
-
-def _gen_copyright(app_name: str, maintainer: str, meta: dict[str, Any]) -> str:
-    """Return a DEP-5 debian/copyright with a single Files: * stanza."""
-    upstream_name = meta.get("upstream_name") or meta.get("project_name") or app_name
-    upstream_contact = meta.get("upstream_contact") or "FIXME"
-    source_url = meta.get("source_url") or "FIXME"
-    year = datetime.now(timezone.utc).year
-    license_label = _resolve_license(meta)
-
-    # Use a real copyright notice when the probe found one; otherwise FIXME.
-    upstream_copyright = (meta.get("upstream_copyright") or "").strip()
-    files_copyright = upstream_copyright or f"{year} FIXME <fixme@example.com>"
-
-    # Use the upstream license body when found; otherwise emit an explicit FIXME.
-    upstream_license_text = (meta.get("upstream_license_text") or "").strip()
-    if upstream_license_text:
-        license_body = _format_dep5_license_text(upstream_license_text)
-    else:
-        license_body = " FIXME: upstream license text not found; human review required."
-
-    header = textwrap.dedent(f"""\
-        Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-        Upstream-Name: {upstream_name}
-        Upstream-Contact: {upstream_contact}
-        Source: {source_url}
-    """)
-
-    files_star = (
-        f"Files: *\n"
-        f"Copyright: {files_copyright}\n"
-        f"License: {license_label}\n"
-    )
-
-    files_debian = (
-        f"Files: debian/*\n"
-        f"Copyright: {year} {maintainer}\n"
-        f"License: {license_label}\n"
-    )
-
-    standalone_license = (
-        f"License: {license_label}\n"
-        f"{license_body}\n"
-    )
-
-    return header + "\n" + files_star + "\n" + files_debian + "\n" + standalone_license
-
-
-# Maintainer script files that may be emitted when content is explicitly
-# provided in meta["maintainer_scripts"].
-_MAINTAINER_SCRIPTS = ("postinst", "preinst", "prerm", "postrm")
-
-
-def _write_maintainer_scripts(
-    debian_dir: Path,
-    output_packages: list[dict[str, Any]],
-    meta: dict[str, Any],
-    write_text_fn: Any,
-) -> None:
-    """Write maintainer scripts from meta["maintainer_scripts"]."""
-    scripts: dict[str, str] = meta.get("maintainer_scripts") or {}
-    for name in _MAINTAINER_SCRIPTS:
-        content = scripts.get(name, "").strip()
-        if not content:
-            continue
-        script_path = debian_dir / name
-        write_text_fn(script_path, content + "\n")
-        script_path.chmod(0o755)
-
-    for pkg in output_packages:
-        pkg_name = pkg["name"]
-        special_files = pkg.get("special_files", [])
-        if not special_files:
-            continue
-
-        lines = [
-            "#!/bin/sh",
-            "set -e",
-            "",
-        ]
-
-        for spec in special_files:
-            path = spec["path"]
-            mode_oct = int(spec["mode_octal"], 8)
-            mode_str = spec["mode_octal"].replace("0o", "")
-            owner = spec["owner"]
-            group = spec["group"]
-
-            import stat
-            if mode_oct & (stat.S_ISUID | stat.S_ISGID):
-                owner = "root"
-                group = "root"
-
-            if owner == "root" and group == "root":
-                lines.append(f"chown root:root {path}")
-            elif owner or group:
-                lines.append(f"chown {owner}:{group} {path}")
-
-            lines.append(f"chmod {mode_str} {path}")
-            info(f"  preserved special permission: {pkg_name} {path} {mode_str} {owner}:{group}")
-
-        lines.append("")
-        lines.append("#DEBHELPER#")
-        lines.append("exit 0")
-        lines.append("")
-
-        script_path = debian_dir / f"{pkg_name}.postinst"
-        write_text_fn(script_path, "\n".join(lines))
-        script_path.chmod(0o755)
-
-
-def _write_lintian_overrides(
-    debian_dir: Path,
-    output_packages: list[dict[str, Any]],
-    meta: dict[str, Any],
-    write_text_fn: Any,
-) -> None:
-    """Write lintian override files from meta["lintian_overrides"]."""
-    overrides: dict[str, str] = meta.get("lintian_overrides") or {}
-    pkg_names = {p["name"] for p in output_packages}
-    for pkg_name, content in overrides.items():
-        if pkg_name not in pkg_names:
-            continue
-        content = content.strip()
-        if not content:
-            continue
-        write_text_fn(debian_dir / f"{pkg_name}.lintian-overrides",
-                      content + "\n")
+# _write_lintian_overrides is in deb.generator.lintian (imported above)
 
 
 # pylint: disable=too-many-locals
