@@ -14,7 +14,7 @@ from deb.generator.pkg_validator import validate_packages
 from deb.generator.rules import _gen_meson_configure_override, _gen_rules
 from deb.generator.changelog import _gen_changelog
 from deb.generator.source import _gen_source_format
-from deb.generator.copyright import _gen_copyright, _resolve_license
+from deb.generator.copyright import _gen_copyright
 from deb.generator.maintainer_scripts import _write_maintainer_scripts
 from deb.generator.lintian import _write_lintian_overrides
 from deb.paths import orthos_dir
@@ -25,14 +25,12 @@ from deb.resolution.debian import (
 )
 from deb.generator.plan import _load_plan, _non_empty_buckets
 from deb.generator.naming import (
-    _BIN_BUCKET,
     _merged_files,
     _pkg_name,
     _primary_bucket_name,
     _should_collapse,
 )
 from deb.generator.manifests import (
-    _COLLAPSIBLE_PREFIXES,
     _check_duplicate_ownership,
     _coalesce_to_dirs,
     _gen_install,
@@ -43,6 +41,9 @@ from deb.generator.promotions import (
     _promote_desktop_files_to_primary,
     _rebuild_special_files,
 )
+from deb.generator.descriptions import _pkg_descriptions
+from deb.generator.sections import _infer_primary_section
+from deb.generator.control import _gen_control
 from deb.resolution.oracle import AptOracle, make_oracle
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import info
@@ -55,13 +56,6 @@ _DEFAULT_MAINTAINER = "Unknown Maintainer <fixme@example.com>"
 _BUILD_DEPENDS_BASE = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
 _VERSION_FALLBACK = "0.1.0"
 
-# _BIN_BUCKET is in deb.generator.naming (imported above)
-
-# Buckets whose content is always architecture-independent.
-# Every other bucket may contain compiled binaries, so it defaults to 'any'.
-_ARCH_INDEPENDENT_BUCKETS = {"data", "doc"}
-
-# _COLLAPSIBLE_PREFIXES is in deb.generator.manifests (imported above)
 
 
 def _resolve_version(meta: dict[str, Any]) -> str:
@@ -99,10 +93,6 @@ def _resolve_maintainer(meta: dict[str, Any]) -> str:
     return res["identity"]
 
 
-# _load_plan, _non_empty_buckets are in deb.generator.plan (imported above)
-# _primary_bucket_name, _should_collapse, _pkg_name, _merged_files are in
-# deb.generator.naming (imported above)
-# _coalesce_to_dirs is in deb.generator.manifests (imported above)
 
 
 def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
@@ -213,124 +203,6 @@ def _runtime_dep_state(
     return dep_report, verified_deps, non_emitted_runtime_deps
 
 
-def _pkg_arch(pkg: dict[str, Any]) -> str:
-    """Return 'all' for arch-independent packages, otherwise 'any'."""
-    buckets: list[str] = pkg.get("buckets", [])
-    if buckets and all(b in _ARCH_INDEPENDENT_BUCKETS for b in buckets):
-        return "all"
-    return "any"
-
-
-# Bucket-based description templates: (short, long).
-# The primary/collapsed case is handled separately.
-_BUCKET_DESCRIPTIONS: dict[str, tuple[str, str]] = {
-    "data": ("{app} data", "Shared data files for {app}."),
-    "dev": ("{app} development files", "Development files for {app}."),
-    "doc": ("{app} documentation", "Documentation for {app}."),
-    "runtime": ("{app} runtime libraries", "Shared libraries for {app}."),
-}
-
-
-# Bucket-to-section mapping for non-primary, non-GUI packages.
-_BUCKET_SECTION: dict[str, str] = {
-    "dev":     "devel",
-    "doc":     "doc",
-    "runtime": "libs",
-}
-
-
-def _infer_primary_section(plan_buckets: list[dict[str, Any]], meta: dict[str, Any]) -> str:
-    """Infer the primary Debian section from metadata and staged paths.
-
-    Priority:
-      1. meta["section"] override
-      2. desktop/session evidence -> x11
-      3. content-family path evidence -> specific section
-      4. fallback -> misc
-    """
-    override = meta.get("section", "").strip()
-    if override:
-        return override
-
-    all_paths = [
-        path.lstrip("/")
-        for bucket in plan_buckets
-        for path in bucket.get("files", [])
-    ]
-
-    for path in all_paths:
-        if path.endswith(".desktop") and (
-            path.startswith("usr/share/applications/")
-            or path.startswith("usr/share/xsessions/")
-            or path.startswith("usr/share/wayland-sessions/")
-        ):
-            return "x11"
-
-    def has_prefix(prefixes: tuple[str, ...]) -> bool:
-        return any(path.startswith(p) for path in all_paths for p in prefixes)
-
-    if has_prefix(("usr/share/fonts/", "usr/share/fontconfig/")):
-        return "fonts"
-    if has_prefix(("usr/share/sounds/", "usr/share/pulseaudio/", "usr/share/alsa/", "usr/lib/alsa-lib/")):
-        return "sound"
-    if has_prefix(("usr/share/icons/", "usr/share/pixmaps/", "usr/share/wallpapers/", "usr/share/backgrounds/", "usr/share/thumbnailers/")):
-        return "graphics"
-
-    for path in all_paths:
-        parts = Path(path).parts
-        if len(parts) >= 3 and parts[0] == "usr" and parts[1] == "lib":
-            # Detect usr/lib/gstreamer-* or usr/lib/<triplet>/gstreamer-*
-            if parts[2].startswith("gstreamer-") or (len(parts) >= 4 and parts[3].startswith("gstreamer-")):
-                return "video"
-
-    if has_prefix(("usr/share/webext/", "usr/share/javascript/", "usr/share/nginx/", "usr/share/apache2/")):
-        return "web"
-    if has_prefix(("usr/games/", "usr/share/games/")):
-        return "games"
-
-    for path in all_paths:
-        if path.startswith("usr/share/mime/"):
-            return "text"
-        parts = Path(path).parts
-        if len(parts) >= 3 and parts[0] == "usr" and parts[1] == "share" and parts[2].startswith("gtksourceview-"):
-            return "text"
-
-    if has_prefix(("usr/bin/", "usr/sbin/")):
-        return "utils"
-
-    return "misc"
-
-
-def _pkg_descriptions(
-    app_name: str,
-    bucket_name: str,
-    is_primary: bool,
-    meta: dict[str, Any] | None = None,
-) -> tuple[str, str]:
-    """Return default short and long descriptions for a package."""
-    if is_primary:
-        short = app_name
-        if meta:
-            if meta.get("description_short"):
-                short = meta["description_short"].strip()
-            elif meta.get("description"):
-                short = meta["description"].strip()
-            if not short:
-                short = app_name
-
-        if meta and meta.get("description_long"):
-            long_ = meta["description_long"]
-        else:
-            long_ = f"Runtime package for {app_name}."
-        return short, long_
-
-    if bucket_name in _BUCKET_DESCRIPTIONS:
-        short_tmpl, long_tmpl = _BUCKET_DESCRIPTIONS[bucket_name]
-        return short_tmpl.format(app=app_name), long_tmpl.format(app=app_name)
-
-    short = f"{app_name} {bucket_name}"
-    long_ = f"{bucket_name.capitalize()} package for {app_name}."
-    return short, long_
 
 
 # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
@@ -449,85 +321,6 @@ def _build_package_layout(
     return output_packages, install_manifests
 
 
-def _gen_control(
-    app_name: str,
-    packages: list[dict[str, Any]],
-    maintainer: str,
-    build_depends: str,
-    primary_section: str,
-    primary: str | None = None,
-) -> str:
-    """Return debian/control content for the given packages."""
-    lines: list[str] = [
-        f"Source: {app_name}",
-        f"Section: {primary_section}",
-        "Priority: optional",
-        f"Maintainer: {maintainer}",
-        f"Build-Depends: {build_depends}",
-        "Standards-Version: 4.6.2",
-        "",
-    ]
-
-    for pkg in packages:
-        arch = _pkg_arch(pkg)
-        # ${shlibs:Depends} is only meaningful for arch-specific packages that
-        # contain ELF binaries processed by dh_shlibdeps.  Omit it for:
-        #   - Architecture: all  (no ELF content by definition)
-        #   - -dev packages      (headers/static libs; ELF deps come from main)
-        if arch == "all" or pkg.get("is_dev"):
-            depends_parts = ["${misc:Depends}"]
-        else:
-            depends_parts = ["${shlibs:Depends}", "${misc:Depends}"]
-        depends_parts.extend(pkg.get("extra_depends", []))
-        short_desc = pkg.get("short_desc", pkg["name"])
-        long_desc = pkg.get("long_desc", f"{app_name} package.")
-        pkg_buckets: list[str] = pkg.get("buckets", [])
-        pkg_bucket = pkg_buckets[0] if pkg_buckets else (primary or "")
-        
-        if pkg_bucket in _BUCKET_SECTION:
-            section = _BUCKET_SECTION[pkg_bucket]
-        elif pkg_bucket in (primary, "data", ""):
-            section = primary_section
-        else:
-            section = "misc"
-
-        long_lines = []
-        for line in long_desc.splitlines():
-            s = line.strip()
-            if not s:
-                long_lines.append(" .")
-            else:
-                long_lines.append(f" {s}")
-        formatted_long_desc = "\n".join(long_lines)
-
-        lines += [
-            f"Package: {pkg['name']}",
-            f"Section: {section}",
-            f"Architecture: {arch}",
-            f"Depends: {', '.join(depends_parts)}",
-            f"Description: {short_desc}",
-            f"{formatted_long_desc}",
-            "",
-        ]
-
-    return "\n".join(lines)
-
-
-# _gen_meson_configure_override and _gen_rules are in deb.generator.rules
-# (imported above)
-
-
-# _now_rfc2822 and _gen_changelog are in deb.generator.changelog (imported above)
-# _gen_source_format is in deb.generator.source (imported above)
-
-
-# _gen_install and _check_duplicate_ownership are in deb.generator.manifests
-# (imported above)
-
-
-# _promote_etc_to_primary, _promote_app_lib_dirs_to_primary,
-# _promote_desktop_files_to_primary, _rebuild_special_files
-# are in deb.generator.promotions (imported above)
 
 
 def _write_debian_helpers(
