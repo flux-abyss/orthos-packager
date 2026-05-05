@@ -60,9 +60,23 @@ def _coalesce_to_dirs(
     return result
 
 
+def _install_path(path: str) -> str:
+    """Return *path* with any leading slash(es) stripped.
+
+    Debhelper .install files require paths relative to the install tree root.
+    Glob syntax is preserved; only the leading '/' separator is removed.
+
+    Examples:
+        /usr/include/foo.h -> usr/include/foo.h
+        usr/bin/foo        -> usr/bin/foo
+        /etc/foo.conf      -> etc/foo.conf
+    """
+    return path.lstrip("/")
+
+
 def _gen_install(files: list[str]) -> str:
     """Return the text of a .install file: one path per line."""
-    return "\n".join(files) + "\n" if files else ""
+    return "\n".join(_install_path(f) for f in files) + "\n" if files else ""
 
 
 def _check_duplicate_ownership(
