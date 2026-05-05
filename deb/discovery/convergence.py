@@ -306,9 +306,16 @@ def run_convergence_loop(
     # Pre-pass static checks
     # ------------------------------------------------------------------
     cargo_lock_misses = check_cargo_lock_misses(repo)
-    for m in cargo_lock_misses:
-        result.unresolved_misses.append(m)
-        info(f"  source-issue: {source_issue_diagnostic(m.name)}")
+    if cargo_lock_misses:
+        for m in cargo_lock_misses:
+            result.unresolved_misses.append(m)
+            info(f"  source-issue: {source_issue_diagnostic(m.name)}")
+        result.stalled = True
+        result.stall_reason = "unresolved"
+        result.passes = 0
+        result.log_file = str(logs_dir / "convergence-pass-1.log")
+        _write_result(orthos, result)
+        return result
 
     # ------------------------------------------------------------------
     # Pass 1 - static Meson hint seed
