@@ -25,11 +25,11 @@ _LICENSE_MAP: dict[str, tuple[str, str | None]] = {
 }
 
 
-def _resolve_license(meta: dict[str, Any]) -> str:
-    """Return the normalized Debian license label for the upstream license.
+def _resolve_license(meta: dict[str, Any]) -> tuple[str, str | None]:
+    """Return the normalized Debian license label and common-licenses path.
 
     Normalizes common Meson/SPDX license identifiers before lookup.
-    Falls back to 'unknown' for unrecognized values.
+    Falls back to ('unknown', None) for unrecognized values.
     """
     raw = (meta.get("license") or "").strip()
 
@@ -58,11 +58,7 @@ def _resolve_license(meta: dict[str, Any]) -> str:
     }
     normalized = _SPDX_ALIASES.get(raw, raw).lower()
 
-    entry = _LICENSE_MAP.get(normalized)
-    if entry:
-        label, _common = entry
-        return label
-    return "unknown"
+    return _LICENSE_MAP.get(normalized, ("unknown", None))
 
 
 def _format_dep5_license_text(text: str) -> str:
@@ -92,18 +88,22 @@ def _gen_copyright(app_name: str, maintainer: str, meta: dict[str, Any]) -> str:
     upstream_contact = meta.get("upstream_contact") or "FIXME"
     source_url = meta.get("source_url") or "FIXME"
     year = datetime.now(timezone.utc).year
-    license_label = _resolve_license(meta)
+    license_label, common_license = _resolve_license(meta)
 
     # Use a real copyright notice when the probe found one; otherwise FIXME.
     upstream_copyright = (meta.get("upstream_copyright") or "").strip()
-    files_copyright = upstream_copyright or f"{year} FIXME <fixme@example.com>"
+    files_copyright = upstream_copyright or "FIXME upstream authors"
 
-    # Use the upstream license body when found; otherwise emit an explicit FIXME.
-    upstream_license_text = (meta.get("upstream_license_text") or "").strip()
-    if upstream_license_text:
-        license_body = _format_dep5_license_text(upstream_license_text)
+    if common_license:
+        license_body = f" On Debian systems, the complete text of the {license_label}\n"
+        license_body += f" License can be found in /usr/share/common-licenses/{common_license}."
     else:
-        license_body = " FIXME: upstream license text not found; human review required."
+        # Use the upstream license body when found; otherwise emit an explicit FIXME.
+        upstream_license_text = (meta.get("upstream_license_text") or "").strip()
+        if upstream_license_text:
+            license_body = _format_dep5_license_text(upstream_license_text)
+        else:
+            license_body = " FIXME: upstream license text not found; human review required."
 
     header = textwrap.dedent(f"""\
         Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/

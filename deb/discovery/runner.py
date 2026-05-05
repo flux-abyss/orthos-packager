@@ -93,6 +93,17 @@ class RunnerProtocol(Protocol):
         """Return the meson build dir path as seen inside this runner."""
         ...
 
+    @property
+    def host_meson_build_dir(self) -> "Path | None":
+        """Return the host-side path of the Meson build directory, or None.
+
+        In chroot mode this is the host directory bind-mounted as
+        /orthos/build. Convergence uses it to read meson-logs/meson-log.txt
+        directly from the host filesystem after a failed setup pass.
+        Returns None for HostRunner (build dir is identical to orthos/build).
+        """
+        ...
+
     def pkg_query_exists(self, package: str) -> bool:
         """Return True when *package* is known to apt-cache in this environment.
 
@@ -241,6 +252,11 @@ class HostRunner:
     def meson_build_path(self, host_build_dir: Path) -> str:
         return str(host_build_dir)
 
+    @property
+    def host_meson_build_dir(self) -> Path | None:
+        """Host mode: build dir is the same as orthos/build; no override needed."""
+        return None
+
     def pkg_query_exists(self, package: str) -> bool:
         """Query apt-cache policy on the host to check package availability."""
         result = subprocess.run(
@@ -381,10 +397,13 @@ class ChrootRunner:
 
     mode: str = "chroot"
 
-    def __init__(self, env: object) -> None:
+    def __init__(self, env: object, host_build_dir: Path | None = None) -> None:
         # env is a ChrootEnv; typed as object to avoid a circular import.
         # Callers guarantee it has a .root Path attribute.
         self._chroot_root: Path = env.root  # type: ignore[attr-defined]
+        # Host-side directory bind-mounted as /orthos/build inside the chroot.
+        # Stored so convergence can read meson-logs/meson-log.txt after failures.
+        self._host_build_dir: Path | None = host_build_dir
 
     def run_command(
         self,
@@ -431,6 +450,11 @@ class ChrootRunner:
     def meson_build_path(self, host_build_dir: Path) -> str:
         # Build dir is bind-mounted by ChrootEnv.setup_mounts() at this path.
         return _CHROOT_BUILD
+
+    @property
+    def host_meson_build_dir(self) -> Path | None:
+        """The host-side dir bind-mounted as /orthos/build in the chroot."""
+        return self._host_build_dir
 
     def pkg_query_exists(self, package: str) -> bool:
         """Query apt-cache policy inside the chroot."""

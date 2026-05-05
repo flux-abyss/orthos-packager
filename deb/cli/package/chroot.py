@@ -1,13 +1,24 @@
 """Chroot convergence and staging helpers for the orthos package command."""
 
+import shlex
 import shutil
 from pathlib import Path
 
 from deb.discovery.chroot_env import ChrootEnv, ChrootEnvError
-from deb.discovery.convergence import ConvergenceResult, run_convergence_loop
+from deb.discovery.convergence import (
+    ConvergenceResult,
+    run_convergence_loop,
+)
+from deb.discovery.miss_classifier import source_issue_diagnostic
 from deb.discovery.runner import RunnerProtocol
+from deb.privileged.client import PrivilegedHelperError, destroy_convergence_work
 from deb.utils.fs import write_json
 from deb.utils.log import error, info
+
+# Environment prefix injected into every chroot Meson invocation.
+# Cargo (if used by the project) needs a writable target directory;
+# /orthos/source is read-only, so we redirect Cargo output here.
+_CARGO_ENV = "CARGO_TARGET_DIR=/orthos/build/cargo-target"
 
 
 def _run_convergence_loop(
@@ -52,8 +63,15 @@ def _run_convergence_loop(
             info(f"convergence: stalled - "
                  f"{len(result.unresolved_misses)} miss(es) unresolvable:")
             for miss in result.unresolved_misses:
-                info(f"  {miss.miss_type}: {miss.name}")
+                if miss.miss_type == "source-issue":
+                    info(f"  source-issue: {source_issue_diagnostic(miss.name)}")
+                else:
+                    info(f"  {miss.miss_type}: {miss.name}")
                 info(f"    from: {miss.raw_line}")
+
+            if all(m.miss_type == "source-issue" for m in result.unresolved_misses):
+                error("convergence: fatal source-side issues detected - aborting")
+                return 1
         else:
             info("convergence: stalled - no new packages to install; "
                  "proceeding to stage")
@@ -101,17 +119,17 @@ def _run_chroot_stage(
     if stale_result.exists():
         stale_result.unlink()
 
-    # Determine whether the stage build dir already contains a Meson build tree.
-    # --wipe is only valid for an already-configured build directory; on a fresh
-    # dir some Meson versions reject it.
-    _coredata = stage_build_dir / "meson-private" / "coredata.dat"
-    _already_configured = _coredata.exists()
-
-    if not _already_configured:
-        # Ensure a clean, empty staging build dir before mounting.
-        if stage_build_dir.exists():
-            shutil.rmtree(stage_build_dir)
-        stage_build_dir.mkdir(parents=True, exist_ok=True)
+    # Ensure a clean, empty staging build dir before mounting.
+    # stage_build_dir is under .orthos/chroot-work/ and may be root-owned
+    # from a previous chroot Meson run.  Use the privileged helper.
+    if stage_build_dir.exists():
+        try:
+            destroy_convergence_work(stage_build_dir)
+        except PrivilegedHelperError as exc:
+            error(f"package: failed to clean stage build dir: {exc}")
+            return 1
+    stage_build_dir.mkdir(parents=True, exist_ok=True)
+    _already_configured = False
 
     try:
         env.setup_mounts(
@@ -128,29 +146,19 @@ def _run_chroot_stage(
     failure_step = ""
 
     try:
-        # Build the meson setup command; include --wipe only when reconfiguring.
-        if _already_configured:
-            setup_cmd = [
-                "meson", "setup", "--wipe",
-                "/orthos/build",
-                "/orthos/source",
-                "--prefix=/usr",
-                "--sysconfdir=/etc",
-                "--localstatedir=/var",
-                "--libdir=lib/x86_64-linux-gnu",
-                *meson_option_flags,
-            ]
-        else:
-            setup_cmd = [
-                "meson", "setup",
-                "/orthos/build",
-                "/orthos/source",
-                "--prefix=/usr",
-                "--sysconfdir=/etc",
-                "--localstatedir=/var",
-                "--libdir=lib/x86_64-linux-gnu",
-                *meson_option_flags,
-            ]
+        # Build the meson setup command wrapped in bash -c so env vars are set
+        # before Meson runs (Cargo needs CARGO_TARGET_DIR; source is read-only).
+        # shlex.join() ensures option flags with spaces or special chars are safe.
+        _setup_tokens = [
+            _CARGO_ENV,
+            "meson", "setup",
+            *(["--wipe"] if _already_configured else []),
+            "/orthos/build", "/orthos/source",
+            "--prefix=/usr", "--sysconfdir=/etc",
+            "--localstatedir=/var", "--libdir=lib/x86_64-linux-gnu",
+            *meson_option_flags,
+        ]
+        setup_cmd = ["bash", "-c", shlex.join(_setup_tokens)]
         info("package: chroot stage - meson setup")
         ok, output = chroot_exec(env.root, setup_cmd)
         stage_log.write_text(output, encoding="utf-8")
@@ -158,7 +166,10 @@ def _run_chroot_stage(
             failure_step = "meson setup"
 
         if ok:
-            compile_cmd = ["meson", "compile", "-C", "/orthos/build"]
+            _compile_tokens = [
+                _CARGO_ENV, "meson", "compile", "-C", "/orthos/build",
+            ]
+            compile_cmd = ["bash", "-c", shlex.join(_compile_tokens)]
             info("package: chroot stage - meson compile")
             ok, output = chroot_exec(env.root, compile_cmd)
             with stage_log.open("a", encoding="utf-8") as fh:

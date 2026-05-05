@@ -142,6 +142,9 @@ TOOL_DEP_MAP: dict[str, str] = {
     "flatc": "flatbuffers-compiler",
     "capnp": "capnproto",
     "thrift": "thrift-compiler",
+    # Rust toolchain
+    "cargo": "cargo",
+    "rustc": "rustc",
 }
 
 

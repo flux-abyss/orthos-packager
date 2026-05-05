@@ -213,7 +213,7 @@ def cmd_package(
             return 1
 
         try:
-            runner = ChrootRunner(env)
+            runner = ChrootRunner(env, host_build_dir=convergence_build_dir)
             info(f"convergence: mode = chroot ({chroot_root})")
             rc = _run_convergence_loop(repo_path, runner, meson_options=_meson_options or None)
         finally:

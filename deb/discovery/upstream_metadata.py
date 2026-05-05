@@ -1,13 +1,16 @@
 """Deterministic upstream metadata probing."""
 
 import re
+import subprocess
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 _IGNORE_DIRS = frozenset({
     ".git", ".orthos", "debian", "debian.*", "debian.repo-backup",
-    "build", "_build", "subprojects/packagecache"
+    "build", "_build", "subprojects/packagecache",
+    "target", "node_modules", "vendor", ".cargo"
 })
 
 
@@ -22,6 +25,25 @@ def _is_ignored_path(path: Path) -> bool:
 def _clean_text(text: str) -> str:
     """Normalize whitespace and strip."""
     return " ".join(text.split())
+
+
+def _is_usable_source_url(url: str) -> bool:
+    """Return True if URL is not a known non-project URL."""
+    lower = url.lower()
+    if not (lower.startswith("http://") or lower.startswith("https://")):
+        return False
+    reject = [
+        "sh.rustup.rs", "/api/", "/rss/", ".xml", "/feed", ".json",
+        "docs.", "/doc/", ".png", ".jpg", ".svg", ".gif",
+        "badge", "shield", "issue", "bug", "pull", ".tar.", ".zip", "releases/download"
+    ]
+    return not any(x in lower for x in reject)
+
+
+def _looks_like_repo_url(url: str, repo_name: str) -> bool:
+    if not _is_usable_source_url(url):
+        return False
+    return repo_name.lower() in url.lower()
 
 
 def _first_readme_paragraph(repo: Path) -> str:
@@ -88,6 +110,59 @@ def _read_authors_contact(repo: Path) -> str:
     return ""
 
 
+def _read_git_author_contact(repo: Path) -> str:
+    """Find the dominant human author from git history."""
+    if not (repo / ".git").is_dir() and not (repo / ".git").is_file():
+        return ""
+
+    try:
+        # Run git log and extract authors
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "--format=%an <%ae>"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        return ""
+
+    # Filter out bots and noreply emails
+    valid_authors = []
+    bot_names = {"bot", "github-actions", "dependabot", "renovate", "snyk"}
+    
+    for line in lines:
+        line = line.strip()
+        m = re.match(r'^(.*?)\s*<([^>]+)>$', line)
+        if not m:
+            continue
+            
+        name = m.group(1).strip()
+        email = m.group(2).strip()
+        
+        # Reject empty names or empty emails
+        if not name or not email:
+            continue
+            
+        lower_line = line.lower()
+        # Ignore common bot and noreply strings
+        if "noreply" in lower_line or any(b in lower_line for b in bot_names):
+            continue
+            
+        valid_authors.append(f"{name} <{email}>")
+
+    if not valid_authors:
+        return ""
+
+    # Return the most common
+    counter = Counter(valid_authors)
+    return counter.most_common(1)[0][0]
+
+
 # Regex patterns that identify a copyright notice line.
 # Ordered from most specific to least.
 _COPYRIGHT_PATTERNS = [
@@ -103,28 +178,94 @@ _COPYRIGHT_PATTERNS = [
 _COMMENT_STRIP = re.compile(r'^[\s*/\\#]+')
 
 
+def _read_source_header_copyright(repo: Path) -> str:
+    """Recursively scan source directories for the most common real copyright notice."""
+    source_roots = ["src", "app", "lib", "include", "tools"]
+    extensions = {".vala", ".c", ".h", ".cc", ".cpp", ".hpp", ".rs", ".py", ".js", ".ts", ".go", ".java", ".cs"}
+    
+    found_notices = []
+    
+    for root_name in source_roots:
+        root_dir = repo / root_name
+        if not root_dir.is_dir():
+            continue
+            
+        for p in root_dir.rglob("*"):
+            if not p.is_file() or p.suffix not in extensions:
+                continue
+            if _is_ignored_path(p.relative_to(repo)):
+                continue
+                
+            try:
+                # Read only the first 50 lines to avoid massive memory usage
+                with open(p, "r", encoding="utf-8") as f:
+                    for _ in range(50):
+                        raw_line = f.readline()
+                        if not raw_line:
+                            break
+                        line = _COMMENT_STRIP.sub("", raw_line).strip()
+                        if not line:
+                            continue
+                        for pat in _COPYRIGHT_PATTERNS:
+                            m = pat.search(line)
+                            if m:
+                                holder = " ".join(m.group(1).split())
+                                if holder:
+                                    holder_lower = holder.lower()
+                                    if "free software foundation" in holder_lower and ("fsf.org" in holder_lower or "1989" in holder or "2007" in holder):
+                                        continue
+                                    if "<year>" in holder_lower or "<name of author>" in holder_lower or "<program>" in holder_lower:
+                                        continue
+                                    if "one line to give the program's name" in holder_lower:
+                                        continue
+                                    found_notices.append(holder)
+                                    break
+                        else:
+                            continue
+                        break
+            except (UnicodeDecodeError, OSError):
+                continue
+                
+    if not found_notices:
+        return ""
+        
+    counter = Counter(found_notices)
+    return counter.most_common(1)[0][0]
+
+
+def _is_rejected_holder(holder: str) -> bool:
+    """Return True if the holder string is GPL boilerplate / placeholder."""
+    h = holder.lower()
+    if "free software foundation" in h and ("fsf.org" in h or "1989" in holder or "2007" in holder):
+        return True
+    if "<year>" in h or "<name of author>" in h or "<program>" in h:
+        return True
+    if "one line to give the program's name" in h:
+        return True
+    return False
+
+
 def _read_upstream_copyright(repo: Path) -> str:
-    """Return the first credible copyright notice found in upstream files.
+    """Return the best credible copyright notice found in upstream files.
 
-    Searches preferred sources in order:
-      COPYING, COPYRIGHT, LICENSE, LICENSE.md, NOTICE, README.md, README,
-      then top-level *.c / *.h / *.py under src/ (only if nothing found yet).
+    Priority order:
+      A. Top-level project-level legal/metadata files:
+           AUTHORS, COPYRIGHT, COPYING, LICENSE, LICENSE.md, NOTICE,
+           README.md, README
+         These are checked first because they often contain authoritative
+         project-level aggregate strings like
+         "2000-2025 Carsten Haitzler and various contributors (see AUTHORS)".
+      B. Recursive source-header scan (src/, app/, lib/, include/, tools/).
+         Used when no project-level aggregate is found above.
 
-    Returns the normalized copyright holder/year text, stripped of the label
-    prefix.  Returns empty string when nothing credible is found.
+    Returns the normalized copyright holder/year text, or empty string.
     """
-    preferred = [
-        "COPYING", "COPYRIGHT", "LICENSE", "LICENSE.md", "NOTICE",
-        "README.md", "README",
-    ]
-
     def _extract_from_file(path: Path) -> str:
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             return ""
         for raw_line in text.splitlines():
-            # Strip leading comment characters.
             line = _COMMENT_STRIP.sub("", raw_line).strip()
             if not line:
                 continue
@@ -132,12 +273,17 @@ def _read_upstream_copyright(repo: Path) -> str:
                 m = pat.search(line)
                 if m:
                     holder = " ".join(m.group(1).split())
-                    if holder:
+                    if holder and not _is_rejected_holder(holder):
                         return holder
         return ""
 
-    # Preferred upstream files.
-    for name in preferred:
+    # A. Project-level files, in preference order.
+    # AUTHORS is the strongest signal for the project's own copyright aggregate.
+    project_level = [
+        "AUTHORS", "COPYRIGHT", "COPYING", "LICENSE", "LICENSE.md",
+        "NOTICE", "README.md", "README",
+    ]
+    for name in project_level:
         p = repo / name
         if not p.is_file():
             continue
@@ -145,18 +291,8 @@ def _read_upstream_copyright(repo: Path) -> str:
         if result:
             return result
 
-    # Last resort: top-level source files under src/.
-    src_dir = repo / "src"
-    if src_dir.is_dir():
-        for ext in ("*.c", "*.h", "*.py"):
-            for p in sorted(src_dir.glob(ext)):
-                if _is_ignored_path(p.relative_to(repo)):
-                    continue
-                result = _extract_from_file(p)
-                if result:
-                    return result
-
-    return ""
+    # B. Recursive source-header scan (Paperboy-style projects with no AUTHORS/COPYRIGHT).
+    return _read_source_header_copyright(repo)
 
 
 # Signals the start of a BSD redistribution clause.
@@ -344,6 +480,9 @@ def _read_appstream_metadata(repo: Path) -> dict[str, str]:
             desc_p = root.findtext(".//description/p")
             if desc_p:
                 res["description_long"] = _clean_text(desc_p)
+            homepage = root.findtext(".//url[@type='homepage']")
+            if homepage:
+                res["source_url"] = homepage.strip()
             if res:
                 return res
         except (ET.ParseError, OSError):
@@ -361,6 +500,9 @@ def _read_appstream_metadata(repo: Path) -> dict[str, str]:
             desc_p = root.findtext(".//description/p")
             if desc_p:
                 res["description_long"] = _clean_text(desc_p)
+            homepage = root.findtext(".//url[@type='homepage']")
+            if homepage:
+                res["source_url"] = homepage.strip()
             if res:
                 return res
         except (ET.ParseError, OSError):
@@ -448,20 +590,11 @@ def _read_readme_metadata(repo: Path) -> dict[str, str]:
             if "source_url" not in res:
                 urls = re.findall(r'https?://[^\s<>"\')\]]+', content)
                 repo_name = repo.name
-                best_url = ""
                 for url in urls:
                     url = url.rstrip(".,")
-                    if any(x in url.lower() for x in [".png", ".jpg", ".svg", ".gif", "badge", "shield"]):
-                        continue
-                    if "issues" in url.lower() or "bug" in url.lower() or "pulls" in url.lower():
-                        continue
-                    if repo_name.lower() in url.lower():
-                        best_url = url
+                    if _looks_like_repo_url(url, repo_name):
+                        res["source_url"] = url
                         break
-                    if not best_url:
-                        best_url = url
-                if best_url:
-                    res["source_url"] = best_url
 
             if "upstream_name" in res and "source_url" in res:
                 break
@@ -576,6 +709,12 @@ def probe_upstream_metadata(repo: Path) -> dict[str, Any]:
         "metadata_sources": {},
     }
     
+    # 1. Git remote origin
+    git_url = _read_git_origin_url(repo)
+    if git_url:
+        res["source_url"] = git_url
+        res["metadata_sources"]["source_url"] = "git.origin"
+    
     appstream = _read_appstream_metadata(repo)
     if "description_short" in appstream:
         res["description_short"] = appstream["description_short"]
@@ -583,6 +722,10 @@ def probe_upstream_metadata(repo: Path) -> dict[str, Any]:
     if "description_long" in appstream:
         res["description_long"] = appstream["description_long"]
         res["metadata_sources"]["description_long"] = "appstream.description"
+    if "source_url" in appstream and not res["source_url"]:
+        if _is_usable_source_url(appstream["source_url"]):
+            res["source_url"] = appstream["source_url"]
+            res["metadata_sources"]["source_url"] = "appstream.homepage"
 
     meson = _read_meson_metadata(repo)
     if "upstream_name" in meson and not res["upstream_name"]:
@@ -606,12 +749,9 @@ def probe_upstream_metadata(repo: Path) -> dict[str, Any]:
         res["source_url"] = readme["source_url"]
         res["metadata_sources"]["source_url"] = "readme.url"
 
-    # Fallback: git remote origin from .git/config when no better URL found.
     if not res["source_url"]:
-        git_url = _read_git_origin_url(repo)
-        if git_url:
-            res["source_url"] = git_url
-            res["metadata_sources"]["source_url"] = "git.origin"
+        res["source_url"] = "FIXME"
+        res["metadata_sources"]["source_url"] = "fallback"
 
     desktop = _read_desktop_metadata(repo)
     if "description_short" in desktop and not res["description_short"]:
@@ -623,6 +763,11 @@ def probe_upstream_metadata(repo: Path) -> dict[str, Any]:
     if contact:
         res["upstream_contact"] = contact
         res["metadata_sources"]["upstream_contact"] = "authors.first_email"
+    else:
+        git_contact = _read_git_author_contact(repo)
+        if git_contact:
+            res["upstream_contact"] = git_contact
+            res["metadata_sources"]["upstream_contact"] = "git.author"
 
     upstream_copyright = _read_upstream_copyright(repo)
     if upstream_copyright:
@@ -641,5 +786,15 @@ def probe_upstream_metadata(repo: Path) -> dict[str, Any]:
         if discovered_name:
             res["license"] = discovered_name
             res["metadata_sources"]["license"] = "license.name"
+
+    # Fallback: guess GPL version from license text if license name wasn't detected
+    if not res["license"] and res["upstream_license_text"]:
+        text = res["upstream_license_text"]
+        if "GNU GENERAL PUBLIC LICENSE" in text and "Version 3" in text:
+            if "or later" in text.lower() or "any later version" in text.lower():
+                res["license"] = "GPL-3.0-or-later"
+            else:
+                res["license"] = "GPL-3.0-only"
+            res["metadata_sources"]["license"] = "license.text.guess"
 
     return res
