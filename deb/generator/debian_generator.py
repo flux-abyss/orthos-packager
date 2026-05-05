@@ -3,8 +3,6 @@
 from pathlib import Path
 from typing import Any
 
-from deb.build_deps import BODHI_BUILD_DEP_MAP, scan_meson_dependencies
-from deb.deps import infer_dependencies
 from deb.generator.pkg_validator import validate_packages
 from deb.generator.rules import _gen_meson_configure_override, _gen_rules
 from deb.generator.changelog import _gen_changelog
@@ -13,11 +11,7 @@ from deb.generator.copyright import _gen_copyright
 from deb.generator.maintainer_scripts import _write_maintainer_scripts
 from deb.generator.lintian import _write_lintian_overrides
 from deb.paths import orthos_dir
-from deb.resolution.debian import (
-    resolve_runtime_dependencies,
-    validate_extra_depends,
-    validate_build_depends_str,
-)
+from deb.resolution.debian import validate_extra_depends
 from deb.generator.plan import _load_plan, _non_empty_buckets
 from deb.generator.naming import (
     _pkg_name,
@@ -37,7 +31,9 @@ from deb.generator.promotions import (
 from deb.generator.layout import _build_package_layout
 from deb.generator.sections import _infer_primary_section
 from deb.generator.control import _gen_control
-from deb.resolution.oracle import AptOracle, make_oracle
+from deb.generator.builddeps import _gen_build_depends
+from deb.generator.runtimedeps import _runtime_dep_state
+from deb.resolution.oracle import make_oracle
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import info
 
@@ -45,8 +41,6 @@ _PLAN_FILE = "package-plan.json"
 _RESULT_FILE = "generate-result.json"
 
 _DEFAULT_MAINTAINER = "Unknown Maintainer <fixme@example.com>"
-# Baseline build tools always required by the current packaging flow.
-_BUILD_DEPENDS_BASE = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
 _VERSION_FALLBACK = "0.1.0"
 
 
@@ -86,119 +80,6 @@ def _resolve_maintainer(meta: dict[str, Any]) -> str:
     return res["identity"]
 
 
-
-
-def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
-    """Return (Build-Depends string, provenance label).
-
-    Derives the package list from meson.build dependency() declarations
-    when available; falls back to the static baseline.
-    """
-    names = scan_meson_dependencies(repo)
-    if not names:
-        return _BUILD_DEPENDS_BASE, "control-default"
-
-    # Map known names; unknown names are skipped (they go through smoke resolution).
-    extra: list[str] = []
-    for name in names:
-        pkg = BODHI_BUILD_DEP_MAP.get(name)
-        if pkg and pkg not in extra:
-            extra.append(pkg)
-
-    if not extra:
-        return _BUILD_DEPENDS_BASE, "control-default"
-
-    # Merge base + extras, deduplicated, in stable order.
-    base_parts = [p.strip() for p in _BUILD_DEPENDS_BASE.split(",")]
-    all_parts = base_parts + [p for p in extra if p not in base_parts]
-    raw_depends = ", ".join(all_parts)
-    validated_depends = validate_build_depends_str(raw_depends, oracle)
-    
-    return validated_depends, "meson+map"
-
-
-# Provenance labels that indicate dh_shlibdeps handles the dep better than
-# an explicit Depends entry.  We emit these only via ${shlibs:Depends}.
-# "elf-dynamic" = visible dynamic linkage discovered by ldd.
-# Static linkage never reaches this set (ldd produces no output for it).
-_SHLIBS_HANDLED_PROVENANCES = {"elf-dynamic", "inferred"}
-
-
-def _non_elf_runtime_deps(dep_report: Any) -> list[str]:
-    """Return inferred runtime deps that ${shlibs:Depends} does NOT cover.
-
-    Includes only packages with non-ELF provenance: python-import,
-    gi-namespace, subprocess.  ELF/ldd deps are left to dh_shlibdeps.
-    Result is sorted for stable output.
-    """
-    result: list[str] = []
-    for pkg in dep_report.sorted_depends():
-        prov = dep_report.provenance.get(pkg, "inferred")
-        if prov not in _SHLIBS_HANDLED_PROVENANCES:
-            result.append(pkg)
-    return result
-
-
-def _runtime_dep_state(
-    repo: Path,
-    orthos: Path,
-    oracle: AptOracle | None = None,
-) -> tuple[Any, list[str], list[str]]:
-    """Infer runtime deps and return report plus emitted/non-emitted lists."""
-    stage_dir = orthos / "stage"
-    dep_report = infer_dependencies(
-        repo,
-        stage_dir=stage_dir if stage_dir.exists() else None,
-    )
-
-    inferred_deps = dep_report.sorted_depends()
-
-    # Split inferred deps by provenance for clear logging.
-    elf_dynamic_deps = [
-        pkg for pkg in inferred_deps
-        if dep_report.provenance.get(pkg) == "elf-dynamic"
-    ]
-    explicit_deps = [
-        pkg for pkg in inferred_deps
-        if dep_report.provenance.get(pkg) not in _SHLIBS_HANDLED_PROVENANCES
-    ]
-
-    if elf_dynamic_deps:
-        info("dynamic ELF deps (shlibs-handled): "
-             + ", ".join(elf_dynamic_deps))
-    if explicit_deps:
-        info("explicit non-ELF deps: " + ", ".join(explicit_deps))
-    if not inferred_deps:
-        info("inferred depends: (none)")
-
-    for pkg, pkg_reasons in dep_report.sorted_reasons():
-        prov = dep_report.provenance.get(pkg, "inferred")
-        info(f"  dep: {pkg} [{prov}] <- {'; '.join(pkg_reasons)}")
-
-    non_elf_deps = _non_elf_runtime_deps(dep_report)
-    non_emitted_runtime_deps = [
-        pkg for pkg in inferred_deps if pkg not in non_elf_deps
-    ]
-
-    if non_emitted_runtime_deps:
-        info("leaving to shlibs: "
-             f"{', '.join(non_emitted_runtime_deps)}")
-
-    # Debian resolution layer: confirm every explicit runtime dep is a real
-    # package in the selected apt oracle before it reaches debian/control.
-    # ELF-dynamic deps are excluded from non_elf_deps and handled by
-    # ${shlibs:Depends}.
-    verified_deps = resolve_runtime_dependencies(
-        non_elf_deps,
-        oracle=oracle,
-    )
-
-    return dep_report, verified_deps, non_emitted_runtime_deps
-
-
-
-
-# _build_package_layout is in deb.generator.layout (imported above)
 def _write_debian_helpers(
     debian_dir: Path,
     meta: dict[str, Any],
