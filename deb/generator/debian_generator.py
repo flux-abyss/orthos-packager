@@ -1,6 +1,5 @@
 """Generate a minimal debian/ skeleton from a package-plan.json."""
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +23,20 @@ from deb.resolution.debian import (
     validate_extra_depends,
     validate_build_depends_str,
 )
+from deb.generator.plan import _load_plan, _non_empty_buckets
+from deb.generator.naming import (
+    _BIN_BUCKET,
+    _merged_files,
+    _pkg_name,
+    _primary_bucket_name,
+    _should_collapse,
+)
+from deb.generator.manifests import (
+    _COLLAPSIBLE_PREFIXES,
+    _check_duplicate_ownership,
+    _coalesce_to_dirs,
+    _gen_install,
+)
 from deb.resolution.oracle import AptOracle, make_oracle
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import info
@@ -36,29 +49,13 @@ _DEFAULT_MAINTAINER = "Unknown Maintainer <fixme@example.com>"
 _BUILD_DEPENDS_BASE = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
 _VERSION_FALLBACK = "0.1.0"
 
-# The bucket that carries the main executable.
-_BIN_BUCKET = "bin"
+# _BIN_BUCKET is in deb.generator.naming (imported above)
 
 # Buckets whose content is always architecture-independent.
 # Every other bucket may contain compiled binaries, so it defaults to 'any'.
 _ARCH_INDEPENDENT_BUCKETS = {"data", "doc"}
 
-# Directory prefixes under which the grouping algorithm may emit a wildcard
-# install entry, subject to the exclusivity check in _coalesce_to_dirs.
-# Paths not matching any prefix are always kept at file granularity.
-_COLLAPSIBLE_PREFIXES = (
-    # Executable install areas.
-    "usr/bin",
-    "usr/sbin",
-    "usr/libexec",
-    # Library install areas (covers multiarch triplet subdirs and app-private
-    # plugin dirs such as usr/lib/x86_64-linux-gnu/<app>/).
-    "usr/lib",
-    # Shared data install areas (broad collapse - any exclusively-owned subdir).
-    "usr/share",
-    # System config area.
-    "etc",
-)
+# _COLLAPSIBLE_PREFIXES is in deb.generator.manifests (imported above)
 
 
 def _resolve_version(meta: dict[str, Any]) -> str:
@@ -96,110 +93,10 @@ def _resolve_maintainer(meta: dict[str, Any]) -> str:
     return res["identity"]
 
 
-def _load_plan(plan_file: Path) -> dict[str, Any]:
-    """Read package-plan.json; raise FileNotFoundError if absent.
-
-    Also raises ValueError if the plan contains zero files across all
-    buckets, which indicates a failed or empty stage.
-    """
-    if not plan_file.exists():
-        raise FileNotFoundError(f"package plan not found: {plan_file}\n"
-                                f"Run 'orthos-packager classify <repo>' first.")
-    data: dict[str, Any] = json.loads(plan_file.read_text(encoding="utf-8"))
-    if data.get("total_files", 0) == 0:
-        raise ValueError(
-            f"package plan contains zero files: {plan_file}\n"
-            f"The stage produced no installable output. Fix the build and\n"
-            f"rerun 'orthos-packager stage' then 'orthos-packager classify'.")
-    return data
-
-
-def _non_empty_buckets(
-        package_buckets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only buckets that contain at least one file."""
-    return [b for b in package_buckets if b["file_count"] > 0]
-
-
-def _primary_bucket_name(non_empty: list[dict[str, Any]]) -> str | None:
-    """Return the name of the primary (executable-bearing) bucket.
-
-    The bin bucket is always primary when it has content.  If there is no
-    bin bucket, the first non-empty bucket in canonical order is used.
-    """
-    for b in non_empty:
-        if b["name"] == _BIN_BUCKET:
-            return _BIN_BUCKET
-    return non_empty[0]["name"] if non_empty else None
-
-
-def _should_collapse(non_empty: list[dict[str, Any]]) -> bool:
-    """Return True when all non-empty buckets can be merged into one package.
-
-    Collapse when the only non-empty buckets are the executable-bearing
-    bucket and/or the data bucket - no shared libs, dev headers, doc,
-    or other content that would justify a separate package.
-    """
-    names = {b["name"] for b in non_empty}
-    return names <= {_BIN_BUCKET, "data"}
-
-
-def _pkg_name(app_name: str, bucket_name: str, primary: str | None) -> str:
-    """Return the Debian binary package name for *bucket_name*.
-
-    The primary bucket (executable-bearing, or the sole non-empty bucket)
-    is named after the application with no suffix.  All secondary buckets
-    receive a hyphen-separated suffix: <app>-data, <app>-dev, etc.
-    """
-    if bucket_name == primary:
-        return app_name
-    return f"{app_name}-{bucket_name}"
-
-
-def _merged_files(non_empty: list[dict[str, Any]]) -> list[str]:
-    """Return a sorted, combined file list across all non-empty buckets."""
-    all_files: list[str] = []
-    for b in non_empty:
-        all_files.extend(b["files"])
-    return sorted(all_files)
-
-
-def _coalesce_to_dirs(
-    files: list[str],
-    app_name: str,
-    all_staged: frozenset[str] | None = None,
-) -> list[str]:
-    """Group install entries into directory wildcards where exclusively owned."""
-    app_prefix = f"usr/share/{app_name}"
-    safe_prefixes = _COLLAPSIBLE_PREFIXES + (app_prefix,)
-
-    staged_by_dir: dict[str, set[str]] = {}
-    for f in (all_staged if all_staged is not None else files):
-        parent = str(Path(f.lstrip("/")).parent)
-        staged_by_dir.setdefault(parent, set()).add(f)
-
-    pkg_files = set(files)
-    result: list[str] = []
-    emitted_dirs: set[str] = set()
-
-    for f in files:
-        rel = f.lstrip("/")
-        parent = str(Path(rel).parent)
-
-        if parent in emitted_dirs:
-            continue
-
-        if not any(parent == p or parent.startswith(p + "/")
-                   for p in safe_prefixes):
-            result.append(f)
-            continue
-
-        if staged_by_dir.get(parent, set()).issubset(pkg_files):
-            result.append(parent + "/*")
-            emitted_dirs.add(parent)
-        else:
-            result.append(f)
-
-    return result
+# _load_plan, _non_empty_buckets are in deb.generator.plan (imported above)
+# _primary_bucket_name, _should_collapse, _pkg_name, _merged_files are in
+# deb.generator.naming (imported above)
+# _coalesce_to_dirs is in deb.generator.manifests (imported above)
 
 
 def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
@@ -618,45 +515,8 @@ def _gen_control(
 # _gen_source_format is in deb.generator.source (imported above)
 
 
-def _gen_install(files: list[str]) -> str:
-    """Return the text of a .install file: one path per line."""
-    return "\n".join(files) + "\n" if files else ""
-
-
-def _check_duplicate_ownership(
-    install_manifests: dict[str, list[str]],
-) -> None:
-    """Abort if any install path is claimed by more than one package.
-
-    Builds a mapping of *install glob/path* -> list[package names] and raises
-    'RuntimeError' if any entry is owned by more than one package.  This
-    prevents overlapping file ownership in the generated .deb packages.
-
-    Args:
-        install_manifests: Mapping of package name to its list of install
-            entries (paths or globs as produced by '_coalesce_to_dirs').
-
-    Raises:
-        RuntimeError: When one or more install entries appear in multiple
-            packages.  The error message lists every conflicting entry.
-    """
-    ownership: dict[str, list[str]] = {}  # entry -> [pkg, ...]
-    for pkg_name, entries in install_manifests.items():
-        for entry in entries:
-            ownership.setdefault(entry, []).append(pkg_name)
-
-    duplicates = {
-        entry: pkgs
-        for entry, pkgs in ownership.items()
-        if len(pkgs) > 1
-    }
-    if not duplicates:
-        return
-
-    lines = ["duplicate file ownership detected - aborting:"]
-    for entry, pkgs in sorted(duplicates.items()):
-        lines.append(f"  {entry!r} claimed by: {', '.join(sorted(pkgs))}")
-    raise RuntimeError("\n".join(lines))
+# _gen_install and _check_duplicate_ownership are in deb.generator.manifests
+# (imported above)
 
 
 def _promote_etc_to_primary(
