@@ -13,10 +13,22 @@ def orthos_dir(repo_path: Path) -> Path:
     return base / repo_path.name
 
 
-def shared_chroot_dir(suite: str) -> Path:
-    """Return the shared chroot directory for *suite* and the host arch.
+def chroot_target_name(suite: str, target: str | None) -> str:
+    """Return the canonical chroot directory key for *suite* and *target*.
 
-    Layout:  .orthos/chroots/<suite>-<arch>/
+    When *target* is None or empty, "native" is used so the naming is
+    explicit and consistent regardless of how the caller obtained the value.
+
+    Example: chroot_target_name("trixie", "bodhi") -> "trixie-bodhi"
+             chroot_target_name("trixie", None)    -> "trixie-native"
+    """
+    return f"{suite}-{target or 'native'}"
+
+
+def shared_chroot_dir(target_name: str) -> Path:
+    """Return the shared chroot directory for *target_name* and the host arch.
+
+    Layout:  .orthos/chroots/<target-name>-<arch>/
 
     The shared chroot lives outside every per-project workspace so that
     per-project directories (.orthos/<repo>/) contain only user-owned files
@@ -26,13 +38,13 @@ def shared_chroot_dir(suite: str) -> Path:
     expected and acceptable.
     """
     base = Path.cwd() / ".orthos" / "chroots"
-    return base / f"{suite}-{_CHROOT_ARCH}"
+    return base / f"{target_name}-{_CHROOT_ARCH}"
 
 
-def shared_convergence_build_dir(suite: str, repo_name: str) -> Path:
-    """Return the Meson convergence build directory for *suite* and *repo_name*.
+def shared_convergence_build_dir(target_name: str, repo_name: str) -> Path:
+    """Return the Meson convergence build directory for *target_name* and *repo_name*.
 
-    Layout:  .orthos/chroot-work/<suite>-<arch>/<repo-name>/build-convergence/
+    Layout:  .orthos/chroot-work/<target-name>-<arch>/<repo-name>/build-convergence/
 
     This directory is bind-mounted into the shared chroot as /orthos/build
     during convergence.  Because Meson runs as root inside the chroot, the
@@ -44,12 +56,13 @@ def shared_convergence_build_dir(suite: str, repo_name: str) -> Path:
     The chroot-work tree is cleaned by reset-chroot via orthos-priv.
     """
     base = Path.cwd() / ".orthos" / "chroot-work"
-    return base / f"{suite}-{_CHROOT_ARCH}" / repo_name / "build-convergence"
+    return base / f"{target_name}-{_CHROOT_ARCH}" / repo_name / "build-convergence"
 
-def shared_stage_build_dir(suite: str, repo_name: str) -> Path:
-    """Return the Meson staging build directory for *suite* and *repo_name*.
 
-    Layout:  .orthos/chroot-work/<suite>-<arch>/<repo-name>/build-stage/
+def shared_stage_build_dir(target_name: str, repo_name: str) -> Path:
+    """Return the Meson staging build directory for *target_name* and *repo_name*.
+
+    Layout:  .orthos/chroot-work/<target-name>-<arch>/<repo-name>/build-stage/
 
     This directory is bind-mounted into the shared chroot as /orthos/build
     during the staging phase (separate from the convergence build dir so
@@ -58,6 +71,6 @@ def shared_stage_build_dir(suite: str, repo_name: str) -> Path:
     from the host-side path after mount teardown.
     """
     base = Path.cwd() / ".orthos" / "chroot-work"
-    return base / f"{suite}-{_CHROOT_ARCH}" / repo_name / "build-stage"
+    return base / f"{target_name}-{_CHROOT_ARCH}" / repo_name / "build-stage"
 
 

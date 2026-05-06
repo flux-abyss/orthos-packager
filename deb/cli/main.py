@@ -83,6 +83,7 @@ def main() -> None:
         "reset-chroot": lambda: cmd_reset_chroot(
             args.repo_path,
             suite=getattr(args, "chroot_suite", "trixie"),
+            repo_set=getattr(args, "target_repo_set", None),
         ),
         "config": lambda: cmd_config(getattr(args, "config_command", "")),
     }

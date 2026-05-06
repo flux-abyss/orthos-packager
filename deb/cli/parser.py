@@ -10,16 +10,8 @@ def _add_package_args(p: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help="Local path to the repository.",
     )
-    mod_group = p.add_mutually_exclusive_group()
-    mod_group.add_argument(
-        "--host",
-        action="store_true",
-        default=False,
-        help=(
-            "Run convergence directly on the host (pre-isolation mode). "
-            "Default (without this flag) is isolated chroot mode."
-        ),
-    )
+
+
     p.add_argument(
         "--refresh-chroot",
         action="store_true",
@@ -170,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SUITE",
         default="trixie",
         help="Debian suite whose shared chroot should be reset (default: trixie).",
+    )
+    reset_chroot_p.add_argument(
+        "--target-repo-set",
+        choices=["debian", "bodhi"],
+        default=None,
+        help="Target package universe whose shared chroot should be reset (default: native/current environment).",
     )
 
     config_p = sub.add_parser(
