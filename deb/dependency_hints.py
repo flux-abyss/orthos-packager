@@ -6,12 +6,12 @@ requirements that should be considered during the initial pass of the
 dependency discovery process.
 
 Scans meson.build files for dependency() declarations and resolves each name to
-an installable Debian package. If the Bodhi target repo is active, it prefers
-Bodhi-native packages over generic Debian ones.  Resolution order:
+an installable Debian package. If an optional target repo profile like Bodhi is
+active, it may prefer its native packages over generic Debian ones. Resolution order:
 
   1. Curated mapping table  (deterministic)
   2. Already-installed package satisfying the need
-  3. Bodhi apt candidate
+  3. Target repo apt candidate (e.g., Bodhi)
   4. Fallback apt candidate from any enabled repo
   5. Unresolved - logged; the convergence loop handles stall conditions
 
@@ -30,7 +30,7 @@ from pathlib import Path
 # Curated mapping table
 # ---------------------------------------------------------------------------
 # Keys are Meson dependency() names (lowercase); values are Debian package
-# names.  Bodhi-native entries are marked with "bodhi" in the source field.
+# names. Optional target repo metadata may identify native entries (e.g., 'bodhi_apt' source).
 
 CURATED_BUILD_DEP_MAP: dict[str, str] = {
     # EFL / Elementary  (all modules ship in Bodhi's monolithic libefl-dev)

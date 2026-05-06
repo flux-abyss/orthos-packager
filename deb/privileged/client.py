@@ -57,7 +57,7 @@ __all__ = [
 def create_chroot(
     root: Path,
     suite: str = "trixie",
-    repo_set: str = "debian",
+    repo_set: str | None = None,
     mirror: str = "http://deb.debian.org/debian",
     log_file: Path | None = None,
 ) -> None:

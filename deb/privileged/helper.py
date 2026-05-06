@@ -166,7 +166,9 @@ def _op_create_chroot(args: dict) -> None:
     root = _validate_chroot_root(Path(args["root"]))
     suite = str(args.get("suite", _DEFAULT_SUITE))
     mirror = str(args.get("mirror", _DEBIAN_MIRROR))
-    repo_set = str(args.get("repo_set", "debian"))
+    repo_set = args.get("repo_set")
+    if repo_set is not None:
+        repo_set = str(repo_set)
     log_file_path: str | None = args.get("log_file")
     log_fh = open(log_file_path, "w", encoding="utf-8") if log_file_path else None  # noqa: WPS515
 

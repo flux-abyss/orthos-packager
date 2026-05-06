@@ -35,8 +35,8 @@ def _add_package_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--target-repo-set",
         choices=["debian", "bodhi"],
-        default="debian",
-        help="Target package universe for chroot creation (default: debian).",
+        default=None,
+        help="Target package universe override (default: native/current environment).",
     )
     p.add_argument(
         "--install-host",

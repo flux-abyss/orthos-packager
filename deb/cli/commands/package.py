@@ -254,8 +254,8 @@ def _cmd_package_inner(
         runner: RunnerProtocol = HostRunner()
         rc = _run_convergence_loop(repo_path, runner, meson_options=_meson_options or None)
     else:
-        # Isolated chroot mode: default authoritative path.
-        chroot_dir_name = f"{args.chroot_suite}-{args.target_repo_set}"
+        _target = args.target_repo_set or "native"
+        chroot_dir_name = f"{args.chroot_suite}-{_target}"
         chroot_root = shared_chroot_dir(chroot_dir_name)
         logs_dir = orthos / "logs"
         convergence_build_dir = shared_convergence_build_dir(
@@ -302,8 +302,8 @@ def _cmd_package_inner(
         info("package: convergence and staging run in chroot target environment")
 
         # Stage inside the chroot using a separate build dir to avoid
-        # clobbering the convergence build state.
-        chroot_dir_name_stage = f"{args.chroot_suite}-{args.target_repo_set}"
+        _target_stage = args.target_repo_set or "native"
+        chroot_dir_name_stage = f"{args.chroot_suite}-{_target_stage}"
         stage_build_dir = shared_stage_build_dir(chroot_dir_name_stage, repo.name)
         ensure_dir(stage_build_dir)
 
@@ -321,8 +321,8 @@ def _cmd_package_inner(
     if rc != 0:
         return rc
 
-    # scan → (stage already done in chroot if not host) → inventory → classify → generate
-    chroot_dir_name = f"{args.chroot_suite}-{args.target_repo_set}" if hasattr(args, "target_repo_set") else args.chroot_suite
+    _target_final = getattr(args, "target_repo_set", None) or "native"
+    chroot_dir_name = f"{args.chroot_suite}-{_target_final}"
     _chroot_path = str(shared_chroot_dir(chroot_dir_name)) if not args.host else None
     rc = _run_package_prebuild_pipeline(
         repo_path,

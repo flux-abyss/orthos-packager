@@ -110,7 +110,7 @@ class ChrootEnv:
     def create(
         self,
         suite: str = _DEFAULT_SUITE,
-        repo_set: str = "debian",
+        repo_set: str | None = None,
         mirror: str = _DEBIAN_MIRROR,
         log_file: Path | None = None,
     ) -> None:
@@ -119,11 +119,13 @@ class ChrootEnv:
         Delegates all root-required steps to the privileged helper:
           1. debootstrap --variant=minbase <suite> <root> <mirror>
           2. Copy /etc/resolv.conf into chroot (DNS)
-          3. Write target repo profile apt source to <chroot>/etc/apt/sources.list.d/<profile>.list
-          4. Copy target repo profile keyring to <chroot>
+          3. Write target repo profile apt source (if the profile includes one)
+          4. Copy target repo profile keyring (if the profile includes one)
           5. apt-get update inside chroot
           6. apt-get install -y <base packages> inside chroot
 
+        *repo_set* is None (native/current environment) by default. Pass
+        "debian" or "bodhi" to select an explicit target package universe.
         All output is appended to log_file (if provided).
         Raises ChrootEnvError on any step failure.
         """
@@ -147,13 +149,15 @@ class ChrootEnv:
     def ensure_ready(
         self,
         suite: str = _DEFAULT_SUITE,
-        repo_set: str = "debian",
+        repo_set: str | None = None,
         mirror: str = _DEBIAN_MIRROR,
         refresh: bool = False,
         log_file: Path | None = None,
     ) -> None:
         """Create the chroot if absent; recreate if refresh=True; else reuse.
 
+        *repo_set* is None (native/current environment) by default. Pass
+        "debian" or "bodhi" to select an explicit target package universe.
         Raises ChrootEnvError if creation fails.
         """
         if refresh and self._root.exists():

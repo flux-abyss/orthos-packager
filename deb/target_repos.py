@@ -13,6 +13,13 @@ class TargetRepoProfile:
 
 
 _PROFILES = {
+    "native": TargetRepoProfile(
+        name="native",
+        apt_source_line=None,
+        keyring_host_path=None,
+        keyring_chroot_path=None,
+        origin_markers=(),
+    ),
     "debian": TargetRepoProfile(
         name="debian",
         apt_source_line=None,
@@ -32,11 +39,14 @@ _PROFILES = {
     ),
 }
 
-def get_target_repo_profile(name: str) -> TargetRepoProfile:
+def get_target_repo_profile(name: str | None) -> TargetRepoProfile:
     """Return the TargetRepoProfile for the given name.
-    
-    Raises ValueError if the profile is not known.
+
+    If *name* is None, returns the "native" profile (no explicit repo overlay).
+    Raises ValueError for unknown non-None profile names.
     """
+    if name is None:
+        return _PROFILES["native"]
     if name not in _PROFILES:
         raise ValueError(f"Unknown target repo profile: {name}")
     return _PROFILES[name]
