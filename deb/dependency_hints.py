@@ -1,17 +1,18 @@
 """Curated dependency hints and Meson/pkg-config scanning/resolution support.
 
-scan_meson_dependencies() provides the static hint-layer for the
-convergence scaffold in deb.discovery.convergence. It identifies
-requirements that should be considered during the initial pass of the
-dependency discovery process.
+scan_meson_dependencies() provides the static hint layer for the
+convergence scaffold in deb.discovery.convergence.
 
-Scans meson.build files for dependency() declarations and resolves each name to
-an installable Debian package. If an optional target repo profile like Bodhi is
-active, it may prefer its native packages over generic Debian ones. Resolution order:
+Scans meson.build files for dependency() declarations and resolves each name
+to an installable Debian package. Optional target repo profiles may provide
+origin markers; when apt policy output matches one, the resolved candidate is
+tagged with repo_origin for provenance.
+
+Resolution order:
 
   1. Curated mapping table  (deterministic)
   2. Already-installed package satisfying the need
-  3. Target repo apt candidate (e.g., Bodhi)
+  3. Apt candidate tagged with a target repo origin
   4. Fallback apt candidate from any enabled repo
   5. Unresolved - logged; the convergence loop handles stall conditions
 
@@ -26,14 +27,17 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from deb.target_repos import get_all_profiles
+
 # ---------------------------------------------------------------------------
 # Curated mapping table
 # ---------------------------------------------------------------------------
 # Keys are Meson dependency() names (lowercase); values are Debian package
-# names. Optional target repo metadata may identify native entries (e.g., 'bodhi_apt' source).
+# names. Optional target repo metadata may identify native entries (e.g., 'target_repo_apt' source).
 
 CURATED_BUILD_DEP_MAP: dict[str, str] = {
-    # EFL / Elementary  (all modules ship in Bodhi's monolithic libefl-dev)
+    # EFL / Elementary
+    # Some target repos ship these modules through a monolithic libefl-dev.
     "elementary": "libefl-dev",
     "efl": "libefl-dev",
     "ecore": "libefl-dev",
@@ -165,9 +169,11 @@ CURATED_BUILD_DEP_MAP: dict[str, str] = {
     "blkid": "libblkid-dev",
 }
 
-from deb.target_repos import get_target_repo_profile
-# URL fragments that identify legacy Bodhi-native apt repository origins.
-_BODHI_ORIGINS = get_target_repo_profile("bodhi").origin_markers
+# Map of origin marker string to target repo profile name derived dynamically from profiles
+_TARGET_REPO_ORIGIN_MARKERS: dict[str, str] = {}
+for _p in get_all_profiles():
+    for _marker in _p.origin_markers:
+        _TARGET_REPO_ORIGIN_MARKERS[_marker] = _p.name
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -176,13 +182,17 @@ _BODHI_ORIGINS = get_target_repo_profile("bodhi").origin_markers
 
 @dataclass
 class ResolutionResult:
-    """Outcome for a single Meson dependency name."""
+    """Outcome for a single Meson dependency name.
+
+    Optional target repo profiles may provide origin markers. Candidate packages can be
+    tagged with repo_origin when apt policy output matches a profile marker.
+    """
 
     meson_name: str
     package: str | None  # resolved Debian package name, or None
-    source: str  # "curated_map", "installed", "bodhi_apt", "apt_fallback", "unresolved"
+    source: str  # "curated_map", "installed", "target_repo_apt", "apt_fallback", "unresolved"
     is_installed: bool = False
-    is_bodhi: bool = False
+    repo_origin: str | None = None
     warning: str | None = None
 
 
@@ -310,12 +320,12 @@ def _is_installed(package: str) -> bool:
     return result.returncode == 0 and "Status: install ok installed" in result.stdout
 
 
-def _apt_cache_policy(package: str) -> tuple[bool, bool]:
-    """Return (exists_in_apt, is_bodhi_candidate) for *package*.
+def _apt_cache_policy(package: str) -> tuple[bool, str | None]:
+    """Return (exists_in_apt, repo_origin) for *package*.
 
     *exists_in_apt* is True when apt knows the package at all.
-    *is_bodhi_candidate* is True when the candidate version comes from a
-    Bodhi-native repository.
+    *repo_origin* is the name of the target repo profile if the candidate
+    version comes from a configured repository, or None.
     """
     result = subprocess.run(
         ["apt-cache", "policy", package],
@@ -324,7 +334,7 @@ def _apt_cache_policy(package: str) -> tuple[bool, bool]:
         check=False,
     )
     if result.returncode != 0 or not result.stdout.strip():
-        return False, False
+        return False, None
 
     lines = result.stdout.splitlines()
     # Look for "Candidate: <something>" - if it is "(none)", package unknown.
@@ -333,16 +343,23 @@ def _apt_cache_policy(package: str) -> tuple[bool, bool]:
         if stripped.startswith("Candidate:"):
             candidate = stripped.split(":", 1)[1].strip()
             if candidate in ("", "(none)"):
-                return False, False
+                return False, None
             break
     else:
-        return False, False
+        return False, None
 
     # Check whether any version table entry for the candidate originates from
-    # a Bodhi repo.
-    is_bodhi = any(
-        any(origin in line for origin in _BODHI_ORIGINS) for line in lines)
-    return True, is_bodhi
+    # a configured target repo profile.
+    repo_origin = None
+    for line in lines:
+        for marker, profile_name in _TARGET_REPO_ORIGIN_MARKERS.items():
+            if marker in line:
+                repo_origin = profile_name
+                break
+        if repo_origin:
+            break
+
+    return True, repo_origin
 
 
 def _apt_search_dev(meson_name: str) -> str | None:
@@ -384,42 +401,42 @@ def resolve_build_dependency(name: str) -> ResolutionResult:
     mapped = CURATED_BUILD_DEP_MAP.get(name)
     if mapped:
         installed = _is_installed(mapped)
-        _, is_bodhi = _apt_cache_policy(mapped)
+        _, repo_origin = _apt_cache_policy(mapped)
         return ResolutionResult(
             meson_name=name,
             package=mapped,
             source="curated_map",
             is_installed=installed,
-            is_bodhi=is_bodhi,
+            repo_origin=repo_origin,
         )
 
     # 2. Check if a lib<name>-dev style package is already installed
     naive = f"lib{name}-dev"
     if _is_installed(naive):
-        _, is_bodhi = _apt_cache_policy(naive)
+        _, repo_origin = _apt_cache_policy(naive)
         return ResolutionResult(
             meson_name=name,
             package=naive,
             source="installed",
             is_installed=True,
-            is_bodhi=is_bodhi,
+            repo_origin=repo_origin,
         )
 
-    # 3 + 4. apt candidate search - prefer Bodhi origin
+    # 3 + 4. apt candidate search - prefer target repo origin
     apt_pkg = _apt_search_dev(name)
     if apt_pkg:
         installed = _is_installed(apt_pkg)
-        _, is_bodhi = _apt_cache_policy(apt_pkg)
-        source = "bodhi_apt" if is_bodhi else "apt_fallback"
+        _, repo_origin = _apt_cache_policy(apt_pkg)
+        source = "target_repo_apt" if repo_origin else "apt_fallback"
         warning = (
-            None if is_bodhi else
-            f"using non-Bodhi fallback for dependency '{name}' -> {apt_pkg}")
+            None if repo_origin else
+            f"using apt fallback outside target repo profile for dependency '{name}' -> {apt_pkg}")
         return ResolutionResult(
             meson_name=name,
             package=apt_pkg,
             source=source,
             is_installed=installed,
-            is_bodhi=is_bodhi,
+            repo_origin=repo_origin,
             warning=warning,
         )
 
@@ -552,41 +569,41 @@ def resolve_pkgconfig_dependency(name: str) -> ResolutionResult:
     mapped = CURATED_PKGCONFIG_MAP.get(name)
     if mapped:
         installed = _is_installed(mapped)
-        _, is_bodhi = _apt_cache_policy(mapped)
+        _, repo_origin = _apt_cache_policy(mapped)
         return ResolutionResult(
             meson_name=name,
             package=mapped,
             source="curated_map",
             is_installed=installed,
-            is_bodhi=is_bodhi,
+            repo_origin=repo_origin,
         )
 
     naive = f"lib{name}-dev"
     if _is_installed(naive):
-        _, is_bodhi = _apt_cache_policy(naive)
+        _, repo_origin = _apt_cache_policy(naive)
         return ResolutionResult(
             meson_name=name,
             package=naive,
             source="installed",
             is_installed=True,
-            is_bodhi=is_bodhi,
+            repo_origin=repo_origin,
         )
 
     apt_pkg = _apt_search_dev(name)
     if apt_pkg:
         installed = _is_installed(apt_pkg)
-        _, is_bodhi = _apt_cache_policy(apt_pkg)
-        source = "bodhi_apt" if is_bodhi else "apt_fallback"
+        _, repo_origin = _apt_cache_policy(apt_pkg)
+        source = "target_repo_apt" if repo_origin else "apt_fallback"
         warning = (
-            None if is_bodhi else
-            f"using non-Bodhi fallback for pkg-config dep '{name}' -> {apt_pkg}"
+            None if repo_origin else
+            f"using apt fallback outside target repo profile for pkg-config dep '{name}' -> {apt_pkg}"
         )
         return ResolutionResult(
             meson_name=name,
             package=apt_pkg,
             source=source,
             is_installed=installed,
-            is_bodhi=is_bodhi,
+            repo_origin=repo_origin,
             warning=warning,
         )
 

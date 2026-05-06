@@ -50,3 +50,9 @@ def get_target_repo_profile(name: str | None) -> TargetRepoProfile:
     if name not in _PROFILES:
         raise ValueError(f"Unknown target repo profile: {name}")
     return _PROFILES[name]
+
+
+def get_all_profiles() -> list[TargetRepoProfile]:
+    """Return all defined TargetRepoProfiles."""
+    return list(_PROFILES.values())
+
