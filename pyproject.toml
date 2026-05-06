@@ -9,7 +9,7 @@ requires-python = ">=3.10"
 description = "Deterministic Debian packager for Meson projects."
 
 [project.scripts]
-orthos-packager = "deb.cli.main:main"
+orthos = "deb.cli.main:main"
 orthos-priv = "deb.privileged.helper:main"
 
 [tool.setuptools.packages.find]
