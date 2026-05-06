@@ -145,3 +145,38 @@ def _validate_bind_dst(root: Path, dst: Path) -> Path:
             f"mount destination {dst} is not inside chroot root {resolved_root}"
         )
     return resolved_dst
+
+
+def _validate_build_src_dir(path: Path) -> Path:
+    """Return the resolved build-src path if it passes validation.
+
+    The build-src directory lives at:
+        .orthos/<repo-name>/build-src/
+
+    Checks:
+      - Must be absolute.
+      - Must contain /.orthos/ as a path component.
+      - Must have 'build-src' as the final path component.
+
+    These constraints prevent accidentally targeting a broad workspace directory.
+    """
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"cannot resolve build-src path: {exc}") from exc
+
+    if not resolved.is_absolute():
+        raise ValueError(f"build-src path must be absolute: {resolved}")
+
+    parts = resolved.parts
+    if ".orthos" not in parts:
+        raise ValueError(
+            f"build-src path must be under a .orthos/ workspace directory: {resolved}"
+        )
+
+    if resolved.name != "build-src":
+        raise ValueError(
+            f"build-src path final component must be 'build-src', got {resolved.name!r}: {resolved}"
+        )
+
+    return resolved

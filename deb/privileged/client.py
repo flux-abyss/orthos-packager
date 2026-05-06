@@ -51,6 +51,7 @@ __all__ = [
     "destroy_chroot",
     "reset_chroot",
     "destroy_convergence_work",
+    "destroy_build_src",
 ]
 
 
@@ -279,3 +280,15 @@ def destroy_convergence_work(path: Path) -> None:
     Raises PrivilegedHelperError if the path fails validation or removal fails.
     """
     invoke("destroy-convergence-work", {"path": str(path)})
+
+
+def destroy_build_src(path: Path) -> None:
+    """Remove the build-src directory via orthos-priv.
+
+    *path* must end with the 'build-src' component and be under a .orthos/
+    workspace directory.  This is used to safely clean root-owned files left
+    when dpkg-buildpackage runs inside a chroot with build-src bind-mounted.
+    Does not raise if the path does not exist.
+    Raises PrivilegedHelperError if the path fails validation or removal fails.
+    """
+    invoke("destroy-build-src", {"path": str(path)})

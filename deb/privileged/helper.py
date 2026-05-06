@@ -59,6 +59,7 @@ from deb.privileged.validate import (
     _validate_chroot_root,
     _validate_destroy_root,
     _validate_convergence_work_dir,
+    _validate_build_src_dir,
     _validate_bind_dst,
 )
 from deb.privileged.mounts import _is_mounted, _mount_bind, _mount_special
@@ -805,6 +806,26 @@ def _op_destroy_convergence_work(args: dict) -> None:
     _ok()
 
 
+def _op_destroy_build_src(args: dict) -> None:
+    """Remove the build-src directory under .orthos/<repo>/build-src/.
+
+    Used to clean root-owned files left when dpkg-buildpackage ran inside the
+    chroot with build-src bind-mounted.  Path is strictly validated to end with
+    the 'build-src' component and be under a .orthos/ workspace.
+    """
+    path = _validate_build_src_dir(Path(args["path"]))
+
+    _log(f"orthos-priv: destroy-build-src: {path}")
+    if not path.exists():
+        _log(f"orthos-priv: destroy-build-src: path does not exist, nothing to do")
+        _ok()
+        return
+
+    subprocess.run(["rm", "-rf", str(path)], check=True)
+    _log(f"orthos-priv: destroy-build-src done: {path}")
+    _ok()
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -827,6 +848,7 @@ _OPERATIONS: dict = {
     "destroy-chroot":             _op_destroy_chroot,
     "reset-chroot":               _op_reset_chroot,
     "destroy-convergence-work":   _op_destroy_convergence_work,
+    "destroy-build-src":          _op_destroy_build_src,
 }
 
 
