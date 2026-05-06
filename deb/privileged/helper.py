@@ -49,7 +49,9 @@ import json
 import re
 import subprocess
 import sys
+import os
 from pathlib import Path
+from typing import Any
 
 from deb.privileged.protocol import _ok, _fail, _log
 from deb.privileged.run import _run
@@ -139,17 +141,41 @@ def _internal_pkg_candidate_version(root: Path, package: str) -> str | None:
 # Operation implementations
 # ---------------------------------------------------------------------------
 
+def _ensure_chroot_root_owner(
+    root: Path,
+    log_fh: Any | None = None,
+    create_missing: bool = True,
+) -> None:
+    if create_missing:
+        root.mkdir(parents=True, exist_ok=True)
+    elif not root.exists():
+        raise RuntimeError(f"chroot root does not exist: {root}")
+
+    st = root.stat()
+    mode = st.st_mode & 0o777
+    if st.st_uid == 0 and st.st_gid == 0 and mode == 0o755:
+        return
+    
+    _log(f"orthos-priv: repairing chroot root ownership for {root}")
+    if log_fh and hasattr(log_fh, "write"):
+        log_fh.write(f"\n# repairing root ownership/permissions for {root}\n")
+        log_fh.flush()
+    
+    os.chown(str(root), 0, 0)
+    root.chmod(0o755)
+
+
+
 def _op_create_chroot(args: dict) -> None:
     root = _validate_chroot_root(Path(args["root"]))
     suite = str(args.get("suite", _DEFAULT_SUITE))
     mirror = str(args.get("mirror", _DEBIAN_MIRROR))
     repo_set = str(args.get("repo_set", "debian"))
     log_file_path: str | None = args.get("log_file")
-
-    root.mkdir(parents=True, exist_ok=True)
     log_fh = open(log_file_path, "w", encoding="utf-8") if log_file_path else None  # noqa: WPS515
 
     try:
+        _ensure_chroot_root_owner(root, log_fh, create_missing=True)
         _log(f"orthos-priv: create-chroot start: root={root} suite={suite}")
 
         # Step 1: debootstrap
@@ -242,6 +268,8 @@ def _op_setup_mounts(args: dict) -> None:
     source_repo = Path(args["source_repo"])
     build_dir = Path(args["build_dir"])
     logs_dir = Path(args["logs_dir"])
+
+    _ensure_chroot_root_owner(root, create_missing=False)
 
     _log(f"orthos-priv: setup-mounts start: root={root}")
 

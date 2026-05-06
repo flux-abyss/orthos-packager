@@ -127,7 +127,7 @@ class ChrootEnv:
         All output is appended to log_file (if provided).
         Raises ChrootEnvError on any step failure.
         """
-        self._root.mkdir(parents=True, exist_ok=True)
+
         info(
             f"convergence: chroot: creating {self._root} "
             f"(suite={suite}, mirror={mirror})"
