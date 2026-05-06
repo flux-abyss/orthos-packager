@@ -66,8 +66,8 @@ def create_chroot(
     Steps (performed by the helper):
       1. debootstrap --variant=minbase
       2. Copy /etc/resolv.conf
-      3. Write Bodhi apt source
-      4. Copy Bodhi keyring (hard requirement)
+      3. Write target repo profile apt source
+      4. Copy target repo profile keyring (if required by profile)
       5. apt-get update
       6. apt-get install base packages
 

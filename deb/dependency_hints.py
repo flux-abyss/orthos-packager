@@ -165,8 +165,9 @@ CURATED_BUILD_DEP_MAP: dict[str, str] = {
     "blkid": "libblkid-dev",
 }
 
-# URL fragments that identify a Bodhi-native apt repository origin.
-_BODHI_ORIGINS = ("bodhilinux.com",)
+from deb.target_repos import get_target_repo_profile
+# URL fragments that identify legacy Bodhi-native apt repository origins.
+_BODHI_ORIGINS = get_target_repo_profile("bodhi").origin_markers
 
 # ---------------------------------------------------------------------------
 # Data structures

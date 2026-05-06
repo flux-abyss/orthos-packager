@@ -2,7 +2,7 @@
 
 ChrootEnv manages:
   - debootstrap-based rootfs creation (Debian trixie minbase)
-  - post-setup: DNS, Bodhi apt source injection, base package install
+  - post-setup: DNS, target repo profile apt source injection, base package install
   - bind-mount setup and teardown
 
 Separation of concerns:
@@ -22,8 +22,8 @@ Mount lifecycle:
   - atexit is registered on the first setup_mounts() call as a safety net only.
     Do not rely on atexit as the primary cleanup mechanism.
 
-Bodhi source injection:
-  The Bodhi apt source is written explicitly into the chroot during creation.
+Target Repo Profile injection:
+  The target repo profile's apt source and keyring are written explicitly into the chroot during creation.
   It is not copied from the host sources.list. This ensures deterministic and
   auditable package universe availability (libefl-dev and other EFL packages)
   regardless of host configuration.
@@ -34,7 +34,7 @@ Bind-mount tradeoff:
   This is a known, accepted practical compromise for this round.
 
 Generality note:
-  Bodhi source injection is a package-universe layer specific to this
+  Target repo profile injection is a package-universe layer specific to this
   environment. The ChrootEnv class is the only place in the codebase that
   contains distro/universe-specific setup. The convergence engine itself
   remains general-purpose.
@@ -119,8 +119,8 @@ class ChrootEnv:
         Delegates all root-required steps to the privileged helper:
           1. debootstrap --variant=minbase <suite> <root> <mirror>
           2. Copy /etc/resolv.conf into chroot (DNS)
-          3. Write Bodhi apt source to <chroot>/etc/apt/sources.list.d/bodhi.list
-          4. Copy Bodhi keyring into <chroot>/usr/share/keyrings/
+          3. Write target repo profile apt source to <chroot>/etc/apt/sources.list.d/<profile>.list
+          4. Copy target repo profile keyring to <chroot>
           5. apt-get update inside chroot
           6. apt-get install -y <base packages> inside chroot
 

@@ -72,11 +72,7 @@ _DEBOOTSTRAP = "/usr/sbin/debootstrap"
 _DEFAULT_SUITE = "trixie"
 _DEBIAN_MIRROR = "http://deb.debian.org/debian"
 
-_BODHI_SOURCE_LINE = (
-    "deb [signed-by=/usr/share/keyrings/bodhi-archive-keyring.gpg]"
-    " http://packages.bodhilinux.com/bodhi/ lila b8debbie"
-)
-_BODHI_KEYRING_HOST = Path("/usr/share/keyrings/bodhi-archive-keyring.gpg")
+
 
 _BASE_PACKAGES: list[str] = [
     "build-essential",
@@ -202,38 +198,44 @@ def _op_create_chroot(args: dict) -> None:
             check=True,
         )
 
-        # Step 3 and 4: Bodhi apt source and keyring (if requested)
-        if repo_set == "bodhi":
-            bodhi_list = root / "etc" / "apt" / "sources.list.d" / "bodhi.list"
-            _log(f"orthos-priv: writing Bodhi source -> {bodhi_list}")
-            if log_fh:
-                log_fh.write(f"\n# Bodhi source injection\n{_BODHI_SOURCE_LINE}\n")
-                log_fh.flush()
-            bodhi_list.parent.mkdir(parents=True, exist_ok=True)
-            bodhi_list.write_text(_BODHI_SOURCE_LINE + "\n", encoding="utf-8")
+        from deb.target_repos import get_target_repo_profile
+        profile = get_target_repo_profile(repo_set)
 
-            chroot_keyring_dir = root / "usr" / "share" / "keyrings"
-            if _BODHI_KEYRING_HOST.exists():
-                _log("orthos-priv: copying Bodhi keyring")
+        # Step 3 and 4: Target repo profile apt source and keyring
+        if profile.apt_source_line:
+            profile_list = root / "etc" / "apt" / "sources.list.d" / f"{profile.name}.list"
+            _log(f"orthos-priv: writing {profile.name} source -> {profile_list}")
+            if log_fh:
+                log_fh.write(f"\n# {profile.name} source injection\n{profile.apt_source_line}\n")
+                log_fh.flush()
+            profile_list.parent.mkdir(parents=True, exist_ok=True)
+            profile_list.write_text(profile.apt_source_line + "\n", encoding="utf-8")
+
+        if profile.keyring_host_path and profile.keyring_chroot_path:
+            if profile.keyring_host_path.exists():
+                _log(f"orthos-priv: copying {profile.name} keyring")
                 if log_fh:
-                    log_fh.write(f"\n# Bodhi keyring: {_BODHI_KEYRING_HOST}\n")
+                    log_fh.write(f"\n# {profile.name} keyring: {profile.keyring_host_path}\n")
                     log_fh.flush()
-                chroot_keyring_dir.mkdir(parents=True, exist_ok=True)
+                # Remove leading slash to make it a relative path before appending to root
+                rel_chroot_path = str(profile.keyring_chroot_path).lstrip("/")
+                chroot_keyring_file = root / rel_chroot_path
+                chroot_keyring_file.parent.mkdir(parents=True, exist_ok=True)
                 subprocess.run(
                     [
                         "cp",
-                        str(_BODHI_KEYRING_HOST),
-                        str(chroot_keyring_dir / _BODHI_KEYRING_HOST.name),
+                        str(profile.keyring_host_path),
+                        str(chroot_keyring_file),
                     ],
                     check=True,
                 )
             else:
                 raise RuntimeError(
-                    f"Bodhi keyring not found at {_BODHI_KEYRING_HOST}. "
-                    "Install bodhi-archive-keyring or ensure the keyring file exists."
+                    f"{profile.name} keyring not found at {profile.keyring_host_path}. "
+                    "Ensure the keyring file exists."
                 )
 
-        # Step 5: apt-get update (picks up Bodhi source)
+        # Step 5: apt-get update
         _run(
             ["chroot", str(root), "apt-get", "update"],
             "apt-get update",
