@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import time
 import shutil
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from deb.cli.package.build_source import (
 )
 from deb.cli.package.artifacts import _install_built_debs
 from deb.cli.package.chroot import _run_convergence_loop, _run_chroot_stage
+from deb.cli.package.report import write_package_report, print_verdict
 
 
 def _run_package_prebuild_pipeline(
@@ -156,6 +158,80 @@ def _run_build_step(repo_path: str, probe) -> tuple[int, dict[str, Any] | None]:
 
 # pylint: disable=too-many-return-statements,too-many-locals
 def cmd_package(
+    args: argparse.Namespace,
+    probe,
+    cmd_scan,
+    cmd_stage,
+    cmd_inventory,
+    cmd_classify,
+    cmd_generate,
+) -> int:
+    """Run the full packaging pipeline, write a report, and print a verdict."""
+    _t0 = time.monotonic()
+    repo_path = args.repo_path
+    repo = Path(repo_path)
+    orthos = orthos_dir(repo)
+
+    rc = _cmd_package_inner(
+        args, probe, cmd_scan, cmd_stage, cmd_inventory, cmd_classify, cmd_generate
+    )
+
+    elapsed = time.monotonic() - _t0
+    status = "OK" if rc == 0 else "FAILED"
+
+    try:
+        from deb.discovery.miss_classifier import source_issue_diagnostic
+        conv_data = {}
+        try:
+            import json as _json
+            conv_data = _json.loads((orthos / "convergence-result.json").read_text())
+        except Exception:
+            pass
+        source_issues = [
+            source_issue_diagnostic(m.get("name", ""))
+            for m in conv_data.get("unresolved_misses", [])
+            if m.get("miss_type") == "source-issue"
+        ]
+
+        meta_data = {}
+        try:
+            meta_data = _json.loads((orthos / "package-meta.json").read_text())
+        except Exception:
+            pass
+
+        gen_data = {}
+        try:
+            gen_data = _json.loads((orthos / "generate-result.json").read_text())
+        except Exception:
+            pass
+
+        write_package_report(orthos, status, elapsed)
+
+        artifacts_dir = orthos / "artifacts"
+        artifact_paths = sorted(artifacts_dir.glob("*.deb")) if artifacts_dir.is_dir() else []
+        total_bytes = sum(p.stat().st_size for p in artifact_paths if p.exists())
+
+        print_verdict(
+            status=status,
+            project_name=meta_data.get("project_name") or repo.name,
+            version=meta_data.get("version") or "",
+            mode=conv_data.get("runner_mode") or "host",
+            elapsed=elapsed,
+            pkg_count=len(gen_data.get("binary_packages") or []),
+            artifact_count=len(artifact_paths),
+            total_artifact_bytes=total_bytes,
+            orthos=orthos,
+            source_issues=source_issues or None,
+        )
+    except Exception:
+        # Report generation must never crash the package command.
+        pass
+
+    return rc
+
+
+# pylint: disable=too-many-return-statements,too-many-locals
+def _cmd_package_inner(
     args: argparse.Namespace,
     probe,
     cmd_scan,
