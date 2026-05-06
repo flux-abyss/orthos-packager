@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from deb.build_deps import BODHI_BUILD_DEP_MAP, scan_meson_dependencies
+from deb.dependency_hints import CURATED_BUILD_DEP_MAP, scan_meson_dependencies
 from deb.resolution.debian import validate_build_depends_str
 from deb.resolution.oracle import AptOracle
 
@@ -23,7 +23,7 @@ def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
     # Map known names; unknown names are skipped (they go through smoke resolution).
     extra: list[str] = []
     for name in names:
-        pkg = BODHI_BUILD_DEP_MAP.get(name)
+        pkg = CURATED_BUILD_DEP_MAP.get(name)
         if pkg and pkg not in extra:
             extra.append(pkg)
 

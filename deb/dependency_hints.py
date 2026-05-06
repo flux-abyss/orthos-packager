@@ -1,20 +1,21 @@
-"""Build dependency inference and resolution for Meson projects.
+"""Curated dependency hints and Meson/pkg-config scanning/resolution support.
 
-scan_meson_dependencies() is the static hint-layer provider for the
-convergence scaffold in deb.discovery.convergence.  It is no longer
-the sole source of truth for build dependency decisions.
+scan_meson_dependencies() provides the static hint-layer for the
+convergence scaffold in deb.discovery.convergence. It identifies
+requirements that should be considered during the initial pass of the
+dependency discovery process.
 
-Scans meson.build files for dependency() declarations, resolves each name to
-an installable Debian package, and prefers Bodhi-native packages over generic
-Debian/Ubuntu ones.  Resolution order:
+Scans meson.build files for dependency() declarations and resolves each name to
+an installable Debian package. If the Bodhi target repo is active, it prefers
+Bodhi-native packages over generic Debian ones.  Resolution order:
 
-  1. Bodhi mapping table  (curated, deterministic)
+  1. Curated mapping table  (deterministic)
   2. Already-installed package satisfying the need
   3. Bodhi apt candidate
   4. Fallback apt candidate from any enabled repo
   5. Unresolved - logged; the convergence loop handles stall conditions
 
-BODHI_PKGCONFIG_MAP and validate_pkg_config_closure remain available for
+CURATED_PKGCONFIG_MAP and validate_pkg_config_closure remain available for
 standalone use or future post-apply pkg-config verification passes.
 """
 
@@ -26,12 +27,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Bodhi-first mapping table
+# Curated mapping table
 # ---------------------------------------------------------------------------
 # Keys are Meson dependency() names (lowercase); values are Debian package
 # names.  Bodhi-native entries are marked with "bodhi" in the source field.
 
-BODHI_BUILD_DEP_MAP: dict[str, str] = {
+CURATED_BUILD_DEP_MAP: dict[str, str] = {
     # EFL / Elementary  (all modules ship in Bodhi's monolithic libefl-dev)
     "elementary": "libefl-dev",
     "efl": "libefl-dev",
@@ -178,7 +179,7 @@ class ResolutionResult:
 
     meson_name: str
     package: str | None  # resolved Debian package name, or None
-    source: str  # "bodhi_map", "installed", "bodhi_apt", "apt_fallback", "unresolved"
+    source: str  # "curated_map", "installed", "bodhi_apt", "apt_fallback", "unresolved"
     is_installed: bool = False
     is_bodhi: bool = False
     warning: str | None = None
@@ -226,7 +227,7 @@ _FIND_LIB_SKIP = {
 }
 
 # Option names from meson_options.txt: only captured if they are already
-# a key in BODHI_BUILD_DEP_MAP.  Option names are project-local; the only
+# a key in CURATED_BUILD_DEP_MAP.  Option names are project-local; the only
 # reliable external-dep signal is map membership.
 _OPT_RE = re.compile(r"""option\(\s*['"]([^'"]+)['"]""")
 
@@ -281,12 +282,12 @@ def scan_meson_dependencies(repo: Path) -> list[str]:
             if name not in _FIND_LIB_SKIP:
                 names.add(name)
 
-    # 3: option names - only keep names already in BODHI_BUILD_DEP_MAP.
+    # 3: option names - only keep names already in CURATED_BUILD_DEP_MAP.
     for opts_name in ("meson_options.txt", "meson.options"):
         opts_file = repo / opts_name
         if opts_file.exists():
             for name in _scan_file_for_pattern(opts_file, _OPT_RE):
-                if name in BODHI_BUILD_DEP_MAP:
+                if name in CURATED_BUILD_DEP_MAP:
                     names.add(name)
 
     return sorted(names)
@@ -378,15 +379,15 @@ def resolve_build_dependency(name: str) -> ResolutionResult:
 
     See module docstring for resolution order.
     """
-    # 1. Bodhi mapping table
-    mapped = BODHI_BUILD_DEP_MAP.get(name)
+    # 1. Curated mapping table
+    mapped = CURATED_BUILD_DEP_MAP.get(name)
     if mapped:
         installed = _is_installed(mapped)
         _, is_bodhi = _apt_cache_policy(mapped)
         return ResolutionResult(
             meson_name=name,
             package=mapped,
-            source="bodhi_map",
+            source="curated_map",
             is_installed=installed,
             is_bodhi=is_bodhi,
         )
@@ -427,7 +428,7 @@ def resolve_build_dependency(name: str) -> ResolutionResult:
         package=None,
         source="unresolved",
         warning=(f"could not resolve build dependency '{name}': "
-                 f"not in Bodhi map, not installed as lib{name}-dev, "
+                 f"not in curated map, not installed as lib{name}-dev, "
                  f"apt-cache found no candidate"),
     )
 
@@ -466,7 +467,7 @@ def install_missing_build_dependencies(report: BuildDependencyReport) -> int:
 
 # Maps pkg-config module names (as they appear in pkg-config error output) to
 # the Debian package that provides the missing .pc file.
-BODHI_PKGCONFIG_MAP: dict[str, str] = {
+CURATED_PKGCONFIG_MAP: dict[str, str] = {
     # EFL transitive deps surfaced by pkg-config errors during evisum build
     "lua51": "liblua5.1-0-dev",
     "lua5.1": "liblua5.1-0-dev",
@@ -543,18 +544,18 @@ def resolve_pkgconfig_dependency(name: str) -> ResolutionResult:
     """Resolve a pkg-config module name to a Debian package.
 
     Resolution order mirrors the Meson dep resolver:
-      1. BODHI_PKGCONFIG_MAP
+      1. CURATED_PKGCONFIG_MAP
       2. lib<name>-dev already installed
       3. apt-cache search
     """
-    mapped = BODHI_PKGCONFIG_MAP.get(name)
+    mapped = CURATED_PKGCONFIG_MAP.get(name)
     if mapped:
         installed = _is_installed(mapped)
         _, is_bodhi = _apt_cache_policy(mapped)
         return ResolutionResult(
             meson_name=name,
             package=mapped,
-            source="bodhi_map",
+            source="curated_map",
             is_installed=installed,
             is_bodhi=is_bodhi,
         )
@@ -593,7 +594,7 @@ def resolve_pkgconfig_dependency(name: str) -> ResolutionResult:
         package=None,
         source="unresolved",
         warning=(f"could not resolve pkg-config dep '{name}': "
-                 f"not in Bodhi map, not installed as lib{name}-dev, "
+                 f"not in curated map, not installed as lib{name}-dev, "
                  f"apt-cache found no candidate"),
     )
 

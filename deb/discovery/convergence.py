@@ -33,8 +33,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from deb.build_deps import (
-    BODHI_BUILD_DEP_MAP,
+from deb.dependency_hints import (
+    CURATED_BUILD_DEP_MAP,
     scan_meson_dependencies,
 )
 from deb.discovery.miss_classifier import (
@@ -149,8 +149,8 @@ def _resolve_seed_packages(
 ) -> tuple[list[tuple[str, str]], list[str]]:
     """Return (package, meson_name) pairs from the static Meson hint layer.
 
-    Resolution uses only the curated BODHI_BUILD_DEP_MAP.  If a Meson
-    dependency name is not present in the map it is silently skipped; the
+    Resolution uses only the curated CURATED_BUILD_DEP_MAP.  If a Meson
+    dependency is not mapped, it is skipped entirely during pass 1.
     convergence loop will surface it as a concrete miss during meson setup
     interrogation (Pass 2+) where the path-anchored pkgconfig_file_search
     applies the appropriate precision check.
@@ -174,8 +174,8 @@ def _resolve_seed_packages(
     for meson_name in names:
         normalized = meson_name.strip().lower()
 
-        # Curated map only - same in all environments, no network required.
-        pkg: str | None = BODHI_BUILD_DEP_MAP.get(normalized)
+        # pass 1 uses the curated map only
+        pkg: str | None = CURATED_BUILD_DEP_MAP.get(normalized)
         if not pkg:
             continue
 

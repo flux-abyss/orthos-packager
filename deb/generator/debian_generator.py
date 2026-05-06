@@ -31,8 +31,8 @@ from deb.generator.promotions import (
 from deb.generator.layout import _build_package_layout
 from deb.generator.sections import _infer_primary_section
 from deb.generator.control import _gen_control
-from deb.generator.builddeps import _gen_build_depends
-from deb.generator.runtimedeps import _runtime_dep_state
+from deb.generator.build_depends import _gen_build_depends
+from deb.generator.runtime_depends import _runtime_dep_state
 from deb.resolution.oracle import make_oracle
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import info

@@ -6,7 +6,7 @@ pkg-config-miss or library-miss resolution beyond the curated seed maps.
 Resolution order per miss type:
 
   pkg-config-miss:
-    1. BODHI_BUILD_DEP_MAP (curated)
+    1. CURATED_BUILD_DEP_MAP (curated)
     2. runner.pkgconfig_file_search - apt-file search for <name>.pc in chroot
        (chroot mode only; installs apt-file and fetches Contents metadata on
        first use; subsequent calls use the cached database)
@@ -24,7 +24,7 @@ Resolution order per miss type:
        host package metadata, not the chroot's apt sources)
 
   library-miss:
-    1. BODHI_BUILD_DEP_MAP (curated)
+    1. CURATED_BUILD_DEP_MAP (curated)
     2. runner.pkg_query_exists on lib<name>-dev then apt-cache search fallback
     3. runner.pkgconfig_file_search - apt-file search for <name>.pc in chroot
        (chroot mode only; many libraries ship a same-named .pc file)
@@ -46,7 +46,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deb.build_deps import BODHI_BUILD_DEP_MAP, _apt_cache_policy, _apt_search_dev
+from deb.dependency_hints import CURATED_BUILD_DEP_MAP, _apt_cache_policy, _apt_search_dev
 from deb.discovery.miss_classifier import DepMiss
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Packages listed here must NEVER be auto-installed by any resolution path.
 # They are excluded because they conflict with the curated provider family
-# already selected by BODHI_BUILD_DEP_MAP.
+# already selected by CURATED_BUILD_DEP_MAP.
 #
 # libefl-all-dev is the Debian split-EFL meta-package.  It conflicts with
 # Bodhi's monolithic libefl-dev; mixing the two causes dpkg file-overwrite
@@ -368,7 +368,7 @@ def map_miss_to_package(
     # ------------------------------------------------------------------
     if miss.miss_type == "pkg-config-miss":
         # 1. Curated Meson/pkg-config map.
-        pkg = BODHI_BUILD_DEP_MAP.get(name)
+        pkg = CURATED_BUILD_DEP_MAP.get(name)
         if pkg:
             return pkg.strip().lower()
 
@@ -431,7 +431,7 @@ def map_miss_to_package(
     # ------------------------------------------------------------------
     if miss.miss_type == "library-miss":
         # 1. Curated map.
-        pkg = BODHI_BUILD_DEP_MAP.get(name)
+        pkg = CURATED_BUILD_DEP_MAP.get(name)
         if pkg:
             return pkg.strip().lower()
 
