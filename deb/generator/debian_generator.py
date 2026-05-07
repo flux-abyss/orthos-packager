@@ -105,12 +105,17 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """
     repo = Path(meta["repo_path"])
     repo_name = repo.name
-    # Debian package names use hyphens, not underscores.
-    app_name = repo_name.replace("_", "-")
     orthos = orthos_dir(repo)
     plan_file = orthos / _PLAN_FILE
 
     plan = _load_plan(plan_file)
+    build_backend = meta.get("build_backend", plan.get("build_backend", "meson"))
+
+    # Debian package names use hyphens, not underscores.
+    if build_backend == "python-pyproject" and meta.get("project_name"):
+        app_name = meta["project_name"].replace("_", "-")
+    else:
+        app_name = repo_name.replace("_", "-")
 
     non_empty = _non_empty_buckets(plan["package_buckets"])
     debian_dir = orthos / "debian"
