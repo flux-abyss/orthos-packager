@@ -110,6 +110,7 @@ def classify(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     ensure_dir(orthos)
 
     result: dict[str, Any] = {
+        "build_backend": meta.get("build_backend", "meson"),
         "inventory_file": str(inventory_file),
         "package_buckets": package_buckets,
         "plan_file": str(plan_file),

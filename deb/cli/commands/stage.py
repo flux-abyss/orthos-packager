@@ -2,12 +2,12 @@
 
 import subprocess
 
-from deb.backends.build_backend_meson import stage as meson_stage
+from deb.backends.registry import get_backend
 from deb.utils.log import error, info
 
 
 def cmd_stage(repo_path: str, probe, meson_options: dict[str, str] | None = None) -> int:
-    """Run the Meson staging pipeline for a repository."""
+    """Run the build-backend staging pipeline for a repository."""
     try:
         meta = probe(repo_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
@@ -17,10 +17,12 @@ def cmd_stage(repo_path: str, probe, meson_options: dict[str, str] | None = None
     if meson_options:
         meta["meson_options"] = meson_options
 
+    backend_name = meta.get("build_backend", "meson")
     info(f"staging: {meta['repo_path']}")
-    info("running meson setup …")
+    info(f"backend: {backend_name}")
+    info("running build backend setup …")
 
-    rc, result = meson_stage(meta)
+    rc, result = get_backend(backend_name).stage(meta)
 
     if rc == 0:
         info(f"project: {result['project_name'] or '(unknown)'}  "

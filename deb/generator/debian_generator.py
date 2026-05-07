@@ -144,7 +144,9 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     primary = _primary_bucket_name(non_empty)
     collapse = _should_collapse(non_empty)
 
-    build_depends, build_depends_source = _gen_build_depends(repo, oracle)
+    build_depends, build_depends_source = _gen_build_depends(
+        repo, oracle, build_backend=meta.get("build_backend", plan.get("build_backend", "meson"))
+    )
     info(f"build-depends source: {build_depends_source}")
 
     _stage_dir = orthos / "stage"
@@ -227,6 +229,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     result: dict[str, Any] = {
         "binary_packages": binary_packages,
+        "build_backend": meta.get("build_backend", plan.get("build_backend", "meson")),
         "build_depends": build_depends,
         "build_depends_source": build_depends_source,
         "debian_dir": str(debian_dir),

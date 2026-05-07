@@ -1,53 +1,9 @@
 """Probe a local repository and return structured metadata."""
 
-import re
 import subprocess
 from pathlib import Path
 
-# Matches: project('name', ...) or project("name", ...)
-_RE_PROJECT_NAME = re.compile(r"""project\s*\(\s*['"]([^'"]+)['"]""")
-
-# Matches: version: '1.2.3' or version: "1.2.3"
-_RE_VERSION = re.compile(r"""version\s*:\s*['"]([^'"]+)['"]""")
-
-
-def _parse_meson_build(meson_file: Path) -> tuple[str | None, str | None]:
-    """Return (name, version) parsed from meson.build, or (None, None)."""
-    try:
-        text = meson_file.read_text(encoding="utf-8")
-    except OSError:
-        return None, None
-
-    name_match = _RE_PROJECT_NAME.search(text)
-    version_match = _RE_VERSION.search(text)
-
-    name = name_match.group(1) if name_match else None
-    version = version_match.group(1) if version_match else None
-    return name, version
-
-
-def _git_version(repo: "Path") -> str | None:
-    """Return a version string from the nearest git tag, or None.
-
-    Uses 'git describe --tags --abbrev=0' which returns the nearest
-    ancestor tag with no suffix.  Strips a leading 'v' prefix.
-    Only called when meson.build has no version field.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "-C",
-             str(repo), "describe", "--tags", "--abbrev=0"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    tag = result.stdout.strip()
-    return tag.lstrip("v") if tag else None
+from deb.backends.registry import detect_backend
 
 
 def _apt_candidate_version(package: str) -> str | None:
@@ -80,7 +36,16 @@ def _apt_candidate_version(package: str) -> str | None:
 def probe(repo_path: str) -> dict:
     """Probe *repo_path* and return a metadata dict.
 
-    Raises SystemExit on fatal errors (non-existent path, not a Meson project).
+    Raises FileNotFoundError, NotADirectoryError, or ValueError on fatal
+    errors (non-existent path, not a directory, unrecognised build system).
+
+    The returned dict always contains:
+        repo_path        - resolved absolute path string
+        debian_dir       - True if a debian/ directory exists
+        distro_candidate - apt candidate version info dict, or None
+    plus all keys returned by the detected backend's scan_metadata().
+    For the Meson backend that includes: build_backend, meson,
+    project_name, version, version_source.
     """
     path = Path(repo_path).resolve()
 
@@ -90,41 +55,33 @@ def probe(repo_path: str) -> dict:
     if not path.is_dir():
         raise NotADirectoryError(f"not a directory: {path}")
 
-    meson_file = path / "meson.build"
-    if not meson_file.exists():
-        raise ValueError(f"no meson.build found in {path}")
+    # Detect build backend via registry (raises ValueError for unsupported repos).
+    backend = detect_backend(path)
 
-    name, version = _parse_meson_build(meson_file)
+    # Collect all build-system-specific fields from the adapter.
+    backend_meta = backend.scan_metadata(path)
+
+    # Generic fields that every backend shares.
     has_debian = (path / "debian").is_dir()
 
-    # Version precedence:
-    #   1. meson.build  (already in 'version' from _parse_meson_build)
-    #   2. git tag      (nearest ancestor tag, stripped of leading 'v')
-    #   3. None         (generator will apply _VERSION_FALLBACK)
-    version_source = "meson"
-    if not version:
-        version = _git_version(path)
-        version_source = "git-tag" if version else "fallback"
-
     # Query the host apt sources for the candidate version of this project.
-    # This is best-effort: returns None if the package name is unknown or
-    # apt-cache is not available. The result anchors the distro recommendation
-    # before any compatibility reasoning runs.
+    # project_name comes from the backend; best-effort, silently None.
+    project_name = backend_meta.get("project_name")
     distro_candidate: dict | None = None
-    if name:
-        candidate_ver = _apt_candidate_version(name)
+    if project_name:
+        candidate_ver = _apt_candidate_version(project_name)
         if candidate_ver:
             distro_candidate = {
-                "package": name,
+                "package": project_name,
                 "candidate_version": candidate_ver,
             }
 
-    return {
+    meta: dict = {
         "debian_dir": has_debian,
         "distro_candidate": distro_candidate,
-        "meson": True,
-        "project_name": name,
         "repo_path": str(path),
-        "version": version,
-        "version_source": version_source,
     }
+    # Merge backend-specific fields last so they take precedence where keys
+    # overlap (build_backend, meson, project_name, version, version_source).
+    meta.update(backend_meta)
+    return meta

@@ -10,12 +10,25 @@ from deb.resolution.oracle import AptOracle
 _BUILD_DEPENDS_BASE = "debhelper-compat (= 13), meson, ninja-build, pkgconf"
 
 
-def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
+def _gen_build_depends(
+    repo: Path,
+    oracle: AptOracle,
+    build_backend: str = "meson",
+) -> tuple[str, str]:
     """Return (Build-Depends string, provenance label).
 
     Derives the package list from meson.build dependency() declarations
     when available; falls back to the static baseline.
+
+    Raises ValueError for unrecognised *build_backend* values (non-Meson
+    support is reserved for future milestones).
     """
+    if build_backend != "meson":
+        raise ValueError(
+            f"_gen_build_depends: unsupported build_backend={build_backend!r}. "
+            "Only 'meson' is supported in this release."
+        )
+
     names = scan_meson_dependencies(repo)
     if not names:
         return _BUILD_DEPENDS_BASE, "control-default"
@@ -37,3 +50,4 @@ def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
     validated_depends = validate_build_depends_str(raw_depends, oracle)
 
     return validated_depends, "meson+map"
+
