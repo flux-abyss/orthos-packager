@@ -141,11 +141,15 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         oracle=oracle,
     )
 
-    primary = _primary_bucket_name(non_empty)
-    collapse = _should_collapse(non_empty)
+    build_backend = meta.get("build_backend", plan.get("build_backend", "meson"))
+    if build_backend == "python-pyproject":
+        collapse = True
+    else:
+        collapse = _should_collapse(non_empty)
 
+    primary = _primary_bucket_name(non_empty)
     build_depends, build_depends_source = _gen_build_depends(
-        repo, oracle, build_backend=meta.get("build_backend", plan.get("build_backend", "meson"))
+        repo, oracle, build_backend=build_backend
     )
     info(f"build-depends source: {build_depends_source}")
 
@@ -185,7 +189,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     write_text(
         debian_dir / "control",
         _gen_control(app_name, output_packages, maintainer, build_depends,
-                     primary_section=primary_section, primary=primary),
+                     primary_section=primary_section, primary=primary, build_backend=build_backend),
     )
 
     rules_path = debian_dir / "rules"
@@ -198,7 +202,8 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if rules_overrides:
             combined_overrides += "\n\n" + rules_overrides
         rules_overrides = combined_overrides
-    write_text(rules_path, _gen_rules(rules_overrides))
+    rules_project_name = (meta.get("project_name") or app_name) if build_backend == "python-pyproject" else app_name
+    write_text(rules_path, _gen_rules(rules_overrides, build_backend=build_backend, project_name=rules_project_name))
     rules_path.chmod(0o755)
 
     write_text(

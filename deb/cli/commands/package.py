@@ -234,14 +234,6 @@ def _cmd_package_inner(
     if rc != 0:
         return rc
 
-    # Python: staging succeeded.  Debian generation/build is not yet
-    # implemented for python-pyproject.  Exit with a clear error message.
-    if build_backend != "meson":
-        info("package: python chroot staging complete")
-        error("package: Debian generation/build for Python projects is not implemented yet")
-        error("package: Milestone D will add Python debian/rules and Build-Depends support")
-        return 1
-
     _chroot_path = str(chroot_root)
     rc = _run_package_prebuild_pipeline(
         repo_path,
@@ -252,11 +244,18 @@ def _cmd_package_inner(
         cmd_classify,
         cmd_generate,
         chroot_path=_chroot_path,
-        meson_options=_meson_options if _meson_options else None,
+        meson_options=_meson_options if (build_backend == "meson" and _meson_options) else None,
         skip_stage=True,
     )
     if rc != 0:
         return rc
+
+    # Stop before dpkg-buildpackage for non-Meson backends (python-pyproject).
+    if build_backend != "meson":
+        info("package: python debian generation complete")
+        error("package: Python dpkg-buildpackage support is not implemented yet")
+        error("package: Milestone D3 will enable Python package builds")
+        return 1
 
     # Create an isolated source copy and inject generated debian/ into it.
     generated_debian = orthos / "debian"

@@ -23,10 +23,14 @@ def _gen_build_depends(
     Raises ValueError for unrecognised *build_backend* values (non-Meson
     support is reserved for future milestones).
     """
+    if build_backend == "python-pyproject":
+        raw_depends = "debhelper-compat (= 13), dh-python, pybuild-plugin-pyproject, python3-all, python3-build, python3-installer, python3-setuptools, python3-wheel"
+        validated_depends = validate_build_depends_str(raw_depends, oracle)
+        return validated_depends, "python-pyproject-default"
+
     if build_backend != "meson":
         raise ValueError(
-            f"_gen_build_depends: unsupported build_backend={build_backend!r}. "
-            "Only 'meson' is supported in this release."
+            f"_gen_build_depends: unsupported build_backend={build_backend!r}."
         )
 
     names = scan_meson_dependencies(repo)
