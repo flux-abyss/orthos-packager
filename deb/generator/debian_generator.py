@@ -212,7 +212,7 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     )
     write_text(source_dir / "format", _gen_source_format())
 
-    if not collapse:
+    if not collapse and build_backend != "python-pyproject":
         _check_duplicate_ownership(install_manifests)
         for pkg_info in output_packages:
             pname = pkg_info["name"]
