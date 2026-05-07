@@ -4,10 +4,12 @@ from pathlib import Path
 from typing import Any
 
 import deb.backends.meson as _meson
+import deb.backends.python_pyproject as _python_pyproject
 
 # Ordered list of registered adapters.  The first adapter whose can_handle()
-# returns True wins during auto-detection.
-_ADAPTERS = [_meson]
+# returns True wins during auto-detection.  Meson is checked first so that
+# projects which wrap a Meson build in pyproject.toml are handled correctly.
+_ADAPTERS = [_meson, _python_pyproject]
 
 _BY_NAME: dict[str, Any] = {a.name: a for a in _ADAPTERS}
 
@@ -22,7 +24,8 @@ def detect_backend(repo: Path) -> Any:
             return adapter
     raise ValueError(
         f"no supported build backend detected in {repo}. "
-        "Currently only Meson projects (meson.build) are supported."
+        "Supported backends: meson (meson.build), "
+        "python-pyproject (pyproject.toml + setuptools.build_meta)."
     )
 
 
