@@ -1,5 +1,8 @@
 """Meson build-backend adapter for the orthos backend registry."""
 
+# _CARGO_ENV is defined here (not in chroot.py) so that stage_chroot() can
+# reference it without creating a backend → cli circular import.
+
 import re
 import subprocess
 from pathlib import Path
@@ -8,6 +11,11 @@ from typing import Any
 import deb.backends.build_backend_meson as _impl
 
 name = "meson"
+
+# Environment prefix injected into every chroot Meson invocation.
+# Cargo (if used by the project) needs a writable target directory;
+# /orthos/source is read-only, so we redirect Cargo output here.
+_CARGO_ENV = "CARGO_TARGET_DIR=/orthos/build/cargo-target"
 
 # Matches: project('name', ...) or project("name", ...)
 _RE_PROJECT_NAME = re.compile(r"""project\s*\(\s*['"]([^'"]+)['"]""")
@@ -97,3 +105,82 @@ def stage(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """
     return _impl.stage(meta)
 
+
+def stage_deps() -> list[str]:
+    """Return stage-time packages for Meson projects.
+
+    Meson and Ninja are installed by the convergence loop, so no extra
+    packages are needed here.  Returns an empty list.
+    """
+    return []
+
+
+def stage_chroot(
+    meta: dict[str, Any],
+    chroot_exec_fn,
+    chroot_root: "Path",
+    source_path: str,
+    build_path: str,
+    destdir_path: str,
+    log_file: "Path",
+) -> tuple[bool, str]:
+    """Run meson setup/compile/install inside an already-mounted chroot.
+
+    Arguments:
+        meta           - probe metadata dict (may contain meson_options).
+        chroot_exec_fn - callable(chroot_root, cmd) -> (bool, str) from
+                         deb.privileged.client.chroot_exec.
+        chroot_root    - host-side Path to the chroot root.
+        source_path    - chroot-internal source path ("/orthos/source").
+        build_path     - chroot-internal build path ("/orthos/build").
+        destdir_path   - chroot-internal DESTDIR ("/orthos/build/destdir").
+        log_file       - host-side Path; output is appended per step.
+
+    Returns:
+        (True, "") on success, or (False, failure_step_name) on the first
+        failed step.
+    """
+    import shlex  # noqa: PLC0415 — stdlib, lightweight
+
+    meson_options: dict[str, str] = meta.get("meson_options") or {}
+    flags = [f"-D{k}={v}" for k, v in sorted(meson_options.items())]
+
+    steps: list[tuple[str, list[str]]] = [
+        (
+            "meson setup",
+            [
+                "bash", "-c",
+                shlex.join([
+                    _CARGO_ENV,
+                    "meson", "setup",
+                    build_path, source_path,
+                    "--prefix=/usr", "--sysconfdir=/etc",
+                    "--localstatedir=/var", "--libdir=lib/x86_64-linux-gnu",
+                    *flags,
+                ]),
+            ],
+        ),
+        (
+            "meson compile",
+            [
+                "bash", "-c",
+                shlex.join([_CARGO_ENV, "meson", "compile", "-C", build_path]),
+            ],
+        ),
+        (
+            "meson install",
+            [
+                "bash", "-c",
+                f"DESTDIR={destdir_path} meson install -C {build_path}",
+            ],
+        ),
+    ]
+
+    for step_name, cmd in steps:
+        ok, output = chroot_exec_fn(chroot_root, cmd)
+        with log_file.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n# {step_name}\n{output}")
+        if not ok:
+            return False, step_name
+
+    return True, ""

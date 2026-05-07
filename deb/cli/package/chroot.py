@@ -1,24 +1,20 @@
 """Chroot convergence and staging helpers for the orthos package command."""
 
-import shlex
 import shutil
 from pathlib import Path
 
+from deb.backends.meson import _CARGO_ENV  # noqa: F401 — re-exported for tests
+from deb.backends.registry import get_backend
 from deb.discovery.chroot_env import ChrootEnv, ChrootEnvError
 from deb.discovery.convergence import (
     ConvergenceResult,
     run_convergence_loop,
 )
 from deb.discovery.miss_classifier import source_issue_diagnostic
-from deb.discovery.runner import RunnerProtocol
+from deb.discovery.runner import ChrootRunner, RunnerProtocol
 from deb.privileged.client import PrivilegedHelperError, destroy_convergence_work
 from deb.utils.fs import write_json
 from deb.utils.log import error, info
-
-# Environment prefix injected into every chroot Meson invocation.
-# Cargo (if used by the project) needs a writable target directory;
-# /orthos/source is read-only, so we redirect Cargo output here.
-_CARGO_ENV = "CARGO_TARGET_DIR=/orthos/build/cargo-target"
 
 
 def _run_convergence_loop(
@@ -90,38 +86,50 @@ def _run_chroot_stage(
     orthos: Path,
     stage_build_dir: Path,
     logs_dir: Path,
+    meta: dict,
     meson_options: dict[str, str] | None = None,
 ) -> int:
-    """Run Meson setup/compile/install inside the chroot for the staging phase.
+    """Run backend-specific setup/build/install inside the chroot for staging.
 
-    Mount layout (reuses setup_mounts with stage_build_dir as build_dir):
+    Dispatches to the detected backend's stage_chroot() method, which owns
+    all build-system-specific commands.  Mount lifecycle, DESTDIR copy, and
+    stage-result.json writing are handled here regardless of backend.
+
+    Mount layout:
       /orthos/source  -> repo           (read-only source bind)
-      /orthos/build   -> stage_build_dir (writable Meson build tree)
+      /orthos/build   -> stage_build_dir (writable build tree)
       /orthos/logs    -> logs_dir
-
-    meson install uses DESTDIR=/orthos/build/destdir so the staged tree lands
-    inside stage_build_dir/destdir on the host.  After mount teardown the CLI
-    copies that tree to orthos/stage so inventory/classify can walk it.
 
     Returns 0 on success, 1 on any failure.
     """
-    from deb.privileged.client import chroot_exec
+    from deb.privileged.client import chroot_exec  # noqa: PLC0415
 
-    meson_option_flags = [
-        f"-D{k}={v}" for k, v in sorted((meson_options or {}).items())
-    ]
+    backend_name = meta.get("build_backend", "meson")
+    backend = get_backend(backend_name)
+
     stage_log = logs_dir / "package-chroot-stage.log"
     stage_log.write_text("", encoding="utf-8")
 
-    # Remove any stale stage-result.json from a previous host-mode run so
-    # inventory/classify cannot see an outdated failure record.
+    # Remove any stale stage-result.json from a previous run.
     stale_result = orthos / "stage-result.json"
     if stale_result.exists():
         stale_result.unlink()
 
+    # Install stage-time deps (idempotent; Meson returns []).
+    # Done before mounting so apt runs against the unmounted chroot state.
+    stage_pkg_list = backend.stage_deps()
+    if stage_pkg_list:
+        info(f"package: installing stage deps for {backend_name}: {stage_pkg_list}")
+        _runner = ChrootRunner(env)
+        missing = [p for p in stage_pkg_list if not _runner.is_pkg_installed(p)]
+        if missing:
+            rc = _runner.apt_install(missing)
+            if rc != 0:
+                error(f"package: failed to install stage deps: {missing}")
+                return 1
+
     # Ensure a clean, empty staging build dir before mounting.
-    # stage_build_dir is under .orthos/chroot-work/ and may be root-owned
-    # from a previous chroot Meson run.  Use the privileged helper.
+    # May be root-owned from a previous chroot run; use the privileged helper.
     if stage_build_dir.exists():
         try:
             destroy_convergence_work(stage_build_dir)
@@ -129,7 +137,6 @@ def _run_chroot_stage(
             error(f"package: failed to clean stage build dir: {exc}")
             return 1
     stage_build_dir.mkdir(parents=True, exist_ok=True)
-    _already_configured = False
 
     try:
         env.setup_mounts(
@@ -142,54 +149,18 @@ def _run_chroot_stage(
         return 1
 
     ok = True
-    output = ""
     failure_step = ""
 
     try:
-        # Build the meson setup command wrapped in bash -c so env vars are set
-        # before Meson runs (Cargo needs CARGO_TARGET_DIR; source is read-only).
-        # shlex.join() ensures option flags with spaces or special chars are safe.
-        _setup_tokens = [
-            _CARGO_ENV,
-            "meson", "setup",
-            *(["--wipe"] if _already_configured else []),
-            "/orthos/build", "/orthos/source",
-            "--prefix=/usr", "--sysconfdir=/etc",
-            "--localstatedir=/var", "--libdir=lib/x86_64-linux-gnu",
-            *meson_option_flags,
-        ]
-        setup_cmd = ["bash", "-c", shlex.join(_setup_tokens)]
-        info("package: chroot stage - meson setup")
-        ok, output = chroot_exec(env.root, setup_cmd)
-        stage_log.write_text(output, encoding="utf-8")
-        if not ok:
-            failure_step = "meson setup"
-
-        if ok:
-            _compile_tokens = [
-                _CARGO_ENV, "meson", "compile", "-C", "/orthos/build",
-            ]
-            compile_cmd = ["bash", "-c", shlex.join(_compile_tokens)]
-            info("package: chroot stage - meson compile")
-            ok, output = chroot_exec(env.root, compile_cmd)
-            with stage_log.open("a", encoding="utf-8") as fh:
-                fh.write("\n" + output)
-            if not ok:
-                failure_step = "meson compile"
-
-        if ok:
-            # meson install needs DESTDIR; pass via bash -c to set env inline.
-            install_cmd = [
-                "bash", "-c",
-                "DESTDIR=/orthos/build/destdir meson install -C /orthos/build",
-            ]
-            info("package: chroot stage - meson install")
-            ok, output = chroot_exec(env.root, install_cmd)
-            with stage_log.open("a", encoding="utf-8") as fh:
-                fh.write("\n" + output)
-            if not ok:
-                failure_step = "meson install"
-
+        ok, failure_step = backend.stage_chroot(
+            meta=meta,
+            chroot_exec_fn=chroot_exec,
+            chroot_root=env.root,
+            source_path="/orthos/source",
+            build_path="/orthos/build",
+            destdir_path="/orthos/build/destdir",
+            log_file=stage_log,
+        )
     finally:
         env.teardown_mounts()
 
@@ -198,7 +169,8 @@ def _run_chroot_stage(
         return 1
 
     # Copy staged tree from stage_build_dir/destdir to orthos/stage.
-    # Files are root-owned but world-readable; shutil.copytree can read them.
+    # Chroot-created files are expected to be readable from the host; copytree
+    # recreates the staged tree under the user-owned project workspace.
     destdir_host = stage_build_dir / "destdir"
     stage_target = orthos / "stage"
 
@@ -217,8 +189,8 @@ def _run_chroot_stage(
 
     info(f"package: chroot stage complete - staged tree at {stage_target}")
 
-    # Write a fresh stage-result.json so inventory/classify see a successful
-    # stage rather than any stale record from a previous host-mode run.
+    # Write a fresh stage-result.json so inventory/classify see the current
+    # chroot staging result rather than any stale record from a previous run.
     write_json(orthos / "stage-result.json", {
         "build_dir": str(stage_build_dir),
         "log_file": str(stage_log),

@@ -124,7 +124,7 @@ def cmd_package(
             status=status,
             project_name=meta_data.get("project_name") or repo.name,
             version=meta_data.get("version") or "",
-            mode=conv_data.get("runner_mode") or "host",
+            mode=conv_data.get("runner_mode") or "chroot",
             elapsed=elapsed,
             pkg_count=len(gen_data.get("binary_packages") or []),
             artifact_count=len(artifact_paths),
@@ -154,6 +154,16 @@ def _cmd_package_inner(
     repo = Path(repo_path)
     orthos = orthos_dir(repo)
 
+    # Probe up-front so build_backend is known before convergence decisions.
+    # Probe is cheap (reads meson.build or pyproject.toml, no network).
+    try:
+        meta = probe(repo_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        error(str(exc))
+        return 1
+
+    build_backend = meta.get("build_backend", "meson")
+
     from deb.cli.options import parse_meson_options
     _meson_options = parse_meson_options(getattr(args, "meson_options", []))
 
@@ -177,29 +187,35 @@ def _cmd_package_inner(
         error(f"convergence: chroot setup failed: {exc}")
         return 1
 
-    try:
-        env.setup_mounts(
-            source_repo=repo,
-            build_dir=convergence_build_dir,
-            logs_dir=logs_dir,
-        )
-    except ChrootEnvError as exc:
-        error(f"convergence: mount setup failed: {exc}")
-        env.teardown_mounts()
-        return 1
+    # Convergence is Meson-only: it runs meson setup iteratively to discover
+    # missing build deps.  Python projects skip it and install stage_deps()
+    # directly inside _run_chroot_stage.
+    if build_backend == "meson":
+        try:
+            env.setup_mounts(
+                source_repo=repo,
+                build_dir=convergence_build_dir,
+                logs_dir=logs_dir,
+            )
+        except ChrootEnvError as exc:
+            error(f"convergence: mount setup failed: {exc}")
+            env.teardown_mounts()
+            return 1
 
-    try:
-        runner = ChrootRunner(env, host_build_dir=convergence_build_dir)
-        info(f"convergence: mode = chroot ({chroot_root})")
-        rc = _run_convergence_loop(repo_path, runner, meson_options=_meson_options or None)
-    finally:
-        # Primary cleanup guarantee: always teardown mounts.
-        env.teardown_mounts()
+        try:
+            runner = ChrootRunner(env, host_build_dir=convergence_build_dir)
+            info(f"convergence: mode = chroot ({chroot_root})")
+            rc = _run_convergence_loop(repo_path, runner, meson_options=_meson_options or None)
+        finally:
+            # Primary cleanup guarantee: always teardown mounts.
+            env.teardown_mounts()
 
-    if rc != 0:
-        return rc
+        if rc != 0:
+            return rc
 
-    info("package: convergence run in chroot target environment")
+        info("package: convergence run in chroot target environment")
+    else:
+        info(f"package: skipping Meson convergence (build_backend={build_backend!r})")
 
     # Stage inside the chroot using a separate build dir so convergence state
     # is never clobbered.
@@ -212,10 +228,19 @@ def _cmd_package_inner(
         orthos,
         stage_build_dir,
         logs_dir,
+        meta=meta,
         meson_options=_meson_options or None,
     )
     if rc != 0:
         return rc
+
+    # Python: staging succeeded.  Debian generation/build is not yet
+    # implemented for python-pyproject.  Exit with a clear error message.
+    if build_backend != "meson":
+        info("package: python chroot staging complete")
+        error("package: Debian generation/build for Python projects is not implemented yet")
+        error("package: Milestone D will add Python debian/rules and Build-Depends support")
+        return 1
 
     _chroot_path = str(chroot_root)
     rc = _run_package_prebuild_pipeline(

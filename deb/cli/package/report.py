@@ -111,7 +111,7 @@ def _collect(orthos: Path, timings: dict[str, float] | None = None) -> dict[str,
         # convergence
         "convergence_success":    convergence.get("success", False),
         "convergence_passes":     convergence.get("passes", 0),
-        "convergence_mode":       convergence.get("runner_mode", "host"),
+        "convergence_mode":       convergence.get("runner_mode", "chroot"),
         "convergence_stalled":    convergence.get("stalled", False),
         "convergence_stall_reason": convergence.get("stall_reason"),
         "convergence_provenance": convergence.get("provenance", []),
