@@ -22,23 +22,30 @@ Authorization model:
     Target the fixed executable path - never a broad python3 -m ... rule.
 
 Allowlisted operations:
-    create-chroot         debootstrap + post-setup
-    setup-mounts          bind-mount proc/sys/dev/devpts/source/build/logs
-    teardown-mounts       unmount listed paths in reverse order
-    apt-install-in-chroot chroot apt-get install
-    chroot-exec           run an allowlisted command inside the chroot
-    pkg-query-installed   chroot dpkg -s
-    pkg-query-exists      chroot apt-cache policy
-    dpkg-search-path      chroot dpkg -S
-    apt-search-dev        chroot apt-cache search (dev package lookup)
-    pkgconfig-file-search chroot apt-file search for <name>.pc - returns owning package
-    destroy-chroot        rm -rf <root>
-    reset-chroot          teardown mounts then destroy
+    create-chroot                  debootstrap + post-setup
+    setup-mounts                   bind-mount proc/sys/dev/devpts/source/build/logs
+    teardown-mounts                unmount listed paths in reverse order
+    apt-install-in-chroot          chroot apt-get install
+    chroot-exec                    run an allowlisted command inside the chroot
+    pkg-query-installed            chroot dpkg -s
+    pkg-query-exists               chroot apt-cache policy
+    pkg-candidate-version          chroot apt-cache policy candidate version
+    dpkg-search-path               chroot dpkg -S
+    apt-search-dev                 chroot apt-cache search (dev package lookup)
+    pkgconfig-file-search          chroot apt-file search for <name>.pc - returns owning package
+    apt-file-search-absolute-path  chroot apt-file search for absolute file path
+    pkg-query-version              chroot dpkg-query -W version query
+    pkgconfig-modversion           chroot pkg-config --modversion query
+    destroy-chroot                 rm -rf <root>
+    reset-chroot                   teardown mounts then destroy
+    destroy-convergence-work       clean root-owned convergence files
+    destroy-build-src              clean root-owned leftover build files
 
 Path validation:
     All chroot root paths must be absolute and contain /.orthos/ as a path
-    component. destroy-chroot and reset-chroot additionally require the path
-    to end with a /chroot segment to prevent accidental broad deletes.
+    component. destroy-chroot and reset-chroot additionally require the final
+    path component to match the safe <target-name>-<arch> pattern (under
+    .orthos/chroots/) to prevent accidental broad deletes.
     The helper fails closed on any validation failure.
 """
 

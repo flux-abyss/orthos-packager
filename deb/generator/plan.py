@@ -13,13 +13,13 @@ def _load_plan(plan_file: Path) -> dict[str, Any]:
     """
     if not plan_file.exists():
         raise FileNotFoundError(f"package plan not found: {plan_file}\n"
-                                f"Run 'orthos-packager classify <repo>' first.")
+                                f"Run 'orthos classify <repo>' first.")
     data: dict[str, Any] = json.loads(plan_file.read_text(encoding="utf-8"))
     if data.get("total_files", 0) == 0:
         raise ValueError(
             f"package plan contains zero files: {plan_file}\n"
             f"The stage produced no installable output. Fix the build and\n"
-            f"rerun 'orthos-packager stage' then 'orthos-packager classify'.")
+            f"rerun 'orthos stage' then 'orthos classify'.")
     return data
 
 

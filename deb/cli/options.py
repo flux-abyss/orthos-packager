@@ -1,4 +1,4 @@
-"""Meson option parsing for orthos-packager CLI."""
+"""Meson option parsing for orthos CLI."""
 
 import re
 import sys

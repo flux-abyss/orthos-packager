@@ -1,140 +1,99 @@
-# Orthos Packager
+# Orthos
 
-Orthos Packager is a deterministic Debian packaging pipeline for building .deb packages from source repositories.
+Orthos is a deterministic Debian packaging tool.
 
-It analyzes a project (currently Meson-based), stages an install tree, inventories the staged files, classifies them into Debian package roles, and generates a Debian package layout with a focus on transparency, reproducibility, and minimal manual setup.
+It scans a source repository, stages an install tree, inventories the staged files, classifies package contents, generates a `debian/` layout, builds `.deb` artifacts, and writes a readable package report.
 
----
+Orthos is currently focused on Meson projects and builds through isolated Debian chroots.
 
-## What it does
+## What Orthos does
 
-- Detects project structure (Meson-focused for now)
-- Builds and stages files into a proper filesystem layout
-- Inventories staged files with semantic labels for runtime, data, development files, app-private plugins, helpers, desktop metadata, services, and config seeds
-- Generates a Debian `debian/` directory
-- Generates functional Debian packaging files including `control`, `rules`, `changelog`, `source/format`, and DEP-5-style `copyright`
-- Produces installable `.deb` packages
-- Supports isolated target-aware dependency convergence through a Debian chroot
-- Supports chroot-based staging and chroot-based package builds
-- Builds from an isolated source copy and injects generated `debian/` packaging cleanly
-- Preserves special permissions such as setuid/setgid through generated maintainer scripts
-- Supports a local maintainer identity config for generated Debian metadata
-- Extracts upstream metadata for package descriptions, license data, copyright notices, upstream contact, and source URLs where available
-
----
+- Detects supported source projects
+- Runs dependency convergence in a target chroot
+- Stages the project install tree in the chroot
+- Inventories staged files
+- Classifies runtime, data, development, desktop, service, config, helper, and plugin files
+- Generates Debian packaging files
+- Builds packages with `dpkg-buildpackage` inside the chroot
+- Copies finished `.deb` artifacts into `.orthos/<project>/artifacts/`
+- Writes a package report at `.orthos/<project>/package-report.txt`
 
 ## Pipeline
 
-Orthos runs in clear, inspectable stages:
+`scan -> stage -> inventory -> classify -> generate -> build -> report`
 
-scan → stage → inventory → classify → generate → build
+The full user-facing path is:
 
-Each stage outputs artifacts under `.orthos/` for debugging and reproducibility.
+`orthos package /path/to/project`
 
-For full target-aware validation, use package mode. Package mode runs convergence in a target chroot, stages in the chroot, generates packaging, builds from an isolated source copy, and collects build artifacts.
+Use an explicit Debian target profile:
 
----
+`orthos package /path/to/project --target-repo-set debian`
 
-## Usage
+Use the Debian+Bodhi overlay target profile:
 
-From a project directory:
-
-```bash
-deb scan .
-deb stage .
-deb inventory .
-deb classify .
-deb generate .
-deb build .
-```
-
-Or run the full pipeline:
-
-```bash
-deb package .
-```
-
-For a Debian target chroot:
-
-```bash
-deb package . --target-repo-set debian
-```
+`orthos package /path/to/project --target-repo-set debodhi`
 
 Pass Meson options when needed:
 
-```bash
-deb package . --target-repo-set debian --meson-option wl=true
-```
+`orthos package /path/to/project --target-repo-set debian --meson-option wl=true`
 
-Set local maintainer identity once:
+Reset a target chroot:
 
-```bash
-deb config init
-deb config show
-```
+`orthos reset-chroot /path/to/project --target-repo-set debian`
 
-The maintainer config is stored at:
+## Target repo profiles
 
-```text
-~/.config/orthos/orthos.toml
-```
+By default, Orthos uses the native target label, meaning no explicit target repo overlay is selected.
 
----
+`no --target-repo-set          -> native label, no explicit repo overlay`
 
-## Generated Debian Metadata
+`--target-repo-set debian      -> explicit Debian target profile`
 
-Orthos generates practical Debian packaging scaffolds rather than empty placeholder files.
+`--target-repo-set debodhi     -> Debian-compatible base with Bodhi repo overlay`
 
-Generated output currently includes:
+The native label does not copy host apt sources into the chroot.
+
+## Maintainer identity
+
+Set local maintainer metadata once:
+
+`orthos config init`
+
+`orthos config show`
+
+The config is stored at:
+
+`~/.config/orthos/orthos.toml`
+
+## Generated Debian files
+
+Orthos currently generates:
 
 - `debian/control`
 - `debian/rules`
 - `debian/changelog`
 - `debian/source/format`
 - `debian/copyright`
+- package `.install` files
+- maintainer scripts when needed
+- lintian overrides when needed
 
-Where possible, Orthos fills these files from discovered project metadata instead of inventing values. Metadata sources include Meson project fields, desktop files, README files, legal files, author files, and git origin.
+Generated packaging is intended to be useful scaffolding. Human review is still expected before publication.
 
-The generated `copyright` file follows a DEP-5-style layout and can include upstream name, upstream contact, source URL, copyright notices, declared license name, upstream license text, Debian packaging copyright, and Debian packaging license.
+## Working directory
 
-The generated `rules` file is a functional debhelper/Meson rules file. It includes Meson configuration passthrough for options supplied through `--meson-option`.
+Orthos writes its working files under:
 
-These files are intended to be useful maintainer scaffolds. They are generated as accurately as Orthos can infer from the source tree, but human review is still expected before publication.
+`.orthos/`
 
----
+This directory contains generated metadata, staged files, logs, chroots, build workspaces, artifacts, and package reports. It is not source output.
 
-## Current Status
+## Current status
 
-Orthos can successfully package real-world Meson applications, including EFL-based projects like Evisum and Enlightenment.
+Orthos can package real Meson projects, including Evisum and Enlightenment.
 
-Current milestones include:
-
-- Target-aware chroot dependency convergence
-- Chroot-based staging for target-correct Meson setup, compile, and install
-- Chroot-based Debian package builds
-- Isolated source builds with generated `debian/` packaging injected cleanly
-- Clean single-package generation for simple Meson applications
-- Multi-package generation for larger desktop projects with runtime, data, development, and plugin-oriented package roles
-- CLI support for passing optional Meson build flags into the packaging flow
-- Semantic classification for runtime files, development files, app-private data, plugins, helpers, desktop metadata, session metadata, services, and config seeds
-- Runtime dependency provenance tracking through ELF dynamic dependency inspection
-- Build dependency inference through Meson dependency mapping
-- Generated Debian `control` files with inferred build dependencies, runtime dependency handling, package relationships, and maintainer identity
-- Generated debhelper/Meson `rules` files with Meson option passthrough
-- Generated DEP-5-style copyright scaffolds using upstream legal metadata where available
-- Upstream metadata probing from Meson, desktop files, README files, legal files, author files, and git origin
-- Setuid/setgid preservation for privileged helper binaries during package installation
-- Configurable Debian maintainer identity for generated `control`, `changelog`, and copyright metadata
-
-Focus is now shifting from "can it build" to generating clean, maintainer-quality Debian packaging.
-
-## Notes
-
-- Currently optimized for Meson-based projects
-- Packaging output is functional, but still evolving toward Debian best practices
-- `.orthos/` is used as a working directory and is not part of source output
-- Package mode is the preferred path for target-aware package validation
-- Standalone stages remain useful for debugging, but may rely on host context unless a target chroot is threaded through the command path
+The current focus is clean, target-aware Debian package generation through chroot-based builds.
 
 ## License
 

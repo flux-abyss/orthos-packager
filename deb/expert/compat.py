@@ -225,7 +225,7 @@ def _dpkg_s_host(header_path: str) -> str | None:
     """Resolve the Debian package owning *header_path* via host dpkg -S.
 
     Returns a normalised package name, or None. Used when no runner is
-    available (standalone stage, host mode).
+    available (standalone/non-chroot analysis).
     """
     try:
         result = subprocess.run(

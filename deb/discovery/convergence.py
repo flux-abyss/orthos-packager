@@ -100,29 +100,29 @@ class ProvenanceEntry:
 
 @dataclass
 class ConvergenceResult:
-    """Outcome of a full convergence run.
+    """Outcome of a convergence run.
 
-    success=True means meson setup exited 0. It does NOT imply compile
-    success, link success, or that dpkg-buildpackage dependencies are met.
+    success=True means meson setup exited 0. It does not imply compile success,
+    link success, or that dpkg-buildpackage dependencies are met.
 
-    runner_mode: "host" or "chroot" - written to convergence-result.json.
+    runner_mode: "host" or "chroot", written to convergence-result.json.
 
-    isolation_scope: reflects what is actually isolated in this run.
-      "convergence-only" when running in chroot mode - the meson setup
-      interrogation and package installs happen inside the chroot, but the
-      later stage/build pipeline still runs on the host.
-      "host" when running in host mode (no isolation at all).
+    isolation_scope: describes the convergence runner only.
+    "convergence-only" means Meson setup interrogation and dependency installs
+    happen inside the isolated chroot. Public package mode runs staging/build
+    through separate chroot steps.
+    "host" is retained only for legacy/lower-level runner use.
 
     install_failed=True when apt install returned nonzero inside the loop.
-      This is a fatal condition: the caller must stop smoke immediately.
-      Distinct from stalled=True which is advisory (the stage step handles it).
+    This is fatal; the caller must stop convergence immediately. Distinct from
+    stalled=True, which is advisory.
 
     stall_reason values:
-      "no-new-packages" - misses classified/mapped, but all resolved
-                          packages were already installed; no progress.
-      "unresolved"      - misses classified, but map_miss_to_package
-                          returned None for all; no candidates exist.
-      None              - not stalled (loop succeeded or max passes hit).
+    "no-new-packages" - misses were mapped, but resolved packages were already
+                        installed; no progress.
+    "unresolved"      - misses were classified, but no package candidates were
+                        found.
+    None              - not stalled.
     """
 
     success: bool
@@ -141,6 +141,25 @@ class ConvergenceResult:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _package_aliases(package: str) -> list[str]:
+    """Return a list of potential aliases for the given package name."""
+    aliases: list[str] = []
+    if package.startswith("lib") and package.endswith("-dev"):
+        base_name = package[3:-4]
+        aliases.append(f"lib{base_name}-all-dev")
+    return aliases
+
+
+def _resolve_existing_package_name(package: str, runner: RunnerProtocol) -> str | None:
+    """Check if the package exists in the runner's environment, or try its aliases."""
+    if runner.pkg_query_exists(package):
+        return package
+    for alias in _package_aliases(package):
+        if runner.pkg_query_exists(alias):
+            return alias
+    return None
 
 
 def _resolve_seed_packages(
@@ -180,18 +199,7 @@ def _resolve_seed_packages(
             continue
 
         normalized_pkg = pkg.strip().lower()
-        
-        target_pkg: str | None = normalized_pkg
-        if not runner.pkg_query_exists(target_pkg):
-            if target_pkg.startswith("lib") and target_pkg.endswith("-dev"):
-                base_name = target_pkg[3:-4]
-                fallback = f"lib{base_name}-all-dev"
-                if runner.pkg_query_exists(fallback):
-                    target_pkg = fallback
-                else:
-                    target_pkg = None
-            else:
-                target_pkg = None
+        target_pkg = _resolve_existing_package_name(normalized_pkg, runner)
 
         if not target_pkg:
             if meson_name not in unresolved:
@@ -298,8 +306,7 @@ def run_convergence_loop(
     if runner.mode == "chroot":
         info(
             "convergence: isolation_scope = convergence-only - "
-            "meson setup and package installs run in chroot; "
-            "stage/build pipeline runs on host in this round"
+            "meson setup and package installs run inside the chroot"
         )
 
     # ------------------------------------------------------------------
@@ -407,7 +414,7 @@ def run_convergence_loop(
             run_cmd = ["bash", "-c", chroot_inner]
             success, output = runner.run_command(run_cmd, log_file)
         else:
-            # Host mode: source is not read-only; pass env kwarg for cleanliness.
+            # Legacy HostRunner: source is not read-only; pass env kwarg for cleanliness.
             cargo_env = dict(os.environ)
             cargo_env["CARGO_TARGET_DIR"] = _CARGO_TARGET_DIR
             success, output = runner.run_command(meson_cmd, log_file, env=cargo_env)

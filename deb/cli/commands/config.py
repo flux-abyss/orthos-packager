@@ -19,11 +19,11 @@ def cmd_config(action: str) -> int:
             print("Warning: The config file is unreadable or contains invalid TOML.")
             print(f"Maintainer: {DEFAULT_MAINTAINER}")
             print("To set your maintainer identity, run:")
-            print("  orthos-packager config init")
+            print("  orthos config init")
         elif res["is_default"]:
             print(f"Maintainer: {DEFAULT_MAINTAINER}")
             print("To set your maintainer identity, run:")
-            print("  orthos-packager config init")
+            print("  orthos config init")
         else:
             print(f"Maintainer: {res['identity']}")
         return 0

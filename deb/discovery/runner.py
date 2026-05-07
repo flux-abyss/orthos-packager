@@ -2,12 +2,11 @@
 
 Defines the RunnerProtocol and two concrete implementations:
 
-  HostRunner   - runs commands directly on the host. This is the pre-isolation
-                 mode. Host package state affects outcomes. Invoked via
-                 'deb smoke --host'.
+  HostRunner   - runs commands directly on the host. This is a legacy
+                 pre-isolation scaffolding mode. Host package state affects outcomes.
 
   ChrootRunner - runs commands inside a prepared debootstrap chroot. This is
-                 the authoritative isolated mode and the default for 'smoke'.
+                 the authoritative isolated mode.
 
 Privilege model:
   ChrootRunner does not contain any direct sudo subprocess calls. All
@@ -139,7 +138,7 @@ class RunnerProtocol(Protocol):
 
         Uses apt-file search against Contents metadata. In chroot mode this
         installs and updates apt-file inside the chroot on first use (guarded
-        by a sentinel so cost is paid only once). In host mode returns None
+        by a sentinel so cost is paid only once). With legacy HostRunner, returns None
         (the host path uses a different resolution strategy via miss_mapper).
 
         Returns a normalised package name, or None.
@@ -151,7 +150,7 @@ class RunnerProtocol(Protocol):
 
         Uses apt-file search. In chroot mode this installs and updates apt-file
         inside the chroot on first use (guarded by a sentinel so cost is paid
-        only once). In host mode returns None (host resolution uses other paths).
+        only once). With legacy HostRunner, returns None (host resolution uses other paths).
 
         Returns a normalised package name, or None.
         """
@@ -161,7 +160,7 @@ class RunnerProtocol(Protocol):
         """Return the installed version of *package* in this runner's environment.
 
         Uses dpkg-query -W. Returns None if the package is not installed.
-        In chroot mode this queries inside the chroot; in host mode it queries
+        In chroot mode this queries inside the chroot; with legacy HostRunner, it queries
         the host. Used for target-version inspection during compatibility search.
         """
         ...
@@ -170,7 +169,7 @@ class RunnerProtocol(Protocol):
         """Return the pkg-config modversion for *module* in this environment.
 
         Returns None if the module is not available. In chroot mode this
-        queries inside the chroot; in host mode it queries the host.
+        queries inside the chroot; with legacy HostRunner, it queries the host.
         Used for target-version inspection during compatibility search.
         """
         ...
@@ -180,7 +179,7 @@ class RunnerProtocol(Protocol):
 
         Uses apt-cache policy. Returns None if the package is unknown or has
         no candidate (e.g. not in any configured source).
-        In chroot mode this queries the chroot's sources; in host mode it
+        In chroot mode this queries the chroot's sources; with legacy HostRunner, it
         queries the host. Used to establish the distro source anchor before
         compatibility archaeology.
         """
@@ -198,7 +197,7 @@ class HostRunner:
     Host package state affects outcomes. The only environment sanitation
     applied is _clean_env() (strips active venv from PATH).
 
-    Use 'deb smoke --host' to select this runner explicitly.
+    Used internally or for legacy testing support.
     """
 
     mode: str = "host"
@@ -254,7 +253,7 @@ class HostRunner:
 
     @property
     def host_meson_build_dir(self) -> Path | None:
-        """Host mode: build dir is the same as orthos/build; no override needed."""
+        """Legacy HostRunner: build dir is the same as orthos/build; no override needed."""
         return None
 
     def pkg_query_exists(self, package: str) -> bool:
@@ -312,16 +311,16 @@ class HostRunner:
         return None
 
     def pkgconfig_file_search(self, name: str) -> str | None:
-        """Not implemented in host mode.
+        """Not implemented for legacy HostRunner.
 
-        Host-mode pkg-config resolution uses apt-file via _apt_file_search_host
+        Legacy host-runner pkg-config resolution uses apt-file via _apt_file_search_host
         in miss_mapper (host-side). The chroot-specific pkgconfig-file-search
         operation is only meaningful for ChrootRunner.
         """
         return None
 
     def apt_file_search_absolute_path(self, path: str) -> str | None:
-        """Not implemented in host mode."""
+        """Not implemented for legacy HostRunner."""
         return None
 
     def pkg_query_version(self, package: str) -> str | None:

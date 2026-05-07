@@ -20,7 +20,7 @@ def _gen_build_depends(repo: Path, oracle: AptOracle) -> tuple[str, str]:
     if not names:
         return _BUILD_DEPENDS_BASE, "control-default"
 
-    # Map known names; unknown names are skipped (they go through smoke resolution).
+    # Map known names; unknown names are skipped (they go through chroot convergence resolution).
     extra: list[str] = []
     for name in names:
         pkg = CURATED_BUILD_DEP_MAP.get(name)

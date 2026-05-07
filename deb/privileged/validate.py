@@ -37,13 +37,13 @@ def _validate_destroy_root(root: Path) -> Path:
     """Like _validate_chroot_root, plus additional safety checks for destroy/reset.
 
     The shared chroot path is:
-        .orthos/chroots/<suite>-<arch>/
+         .orthos/chroots/<target-name>-<arch>/
 
-    Checks (in addition to _validate_chroot_root):
-      - Must be under a .orthos/chroots/ directory component.
-      - The final path component must match the safe suite-arch pattern:
-            ^[a-z0-9.+-]+-[a-z0-9_]+$
-        This accepts names like "trixie-amd64", "bookworm-arm64", "sid-amd64".
+     Checks (in addition to _validate_chroot_root):
+       - Must be under a .orthos/chroots/ directory component.
+       - The final path component must match the safe target-name-arch pattern:
+             ^[a-z0-9.+-]+-[a-z0-9_]+$
+         This accepts names like "trixie-native-amd64", "trixie-debodhi-amd64", etc.
       - The target must not be the .orthos/ or .orthos/chroots/ directory itself.
 
     These constraints prevent accidentally targeting a broad workspace directory.
@@ -71,12 +71,12 @@ def _validate_destroy_root(root: Path) -> Path:
             f"destroy/reset target must not be the chroots/ directory itself: {resolved}"
         )
 
-    # Final component must match a safe <suite>-<arch> pattern.
+    # Final component must match a safe <target-name>-<arch> pattern.
     _SUITE_ARCH_RE = _re.compile(r"^[a-z0-9.+-]+-[a-z0-9_]+$")
     if not _SUITE_ARCH_RE.match(resolved.name):
         raise ValueError(
             f"destroy/reset target name {resolved.name!r} does not match the "
-            f"expected <suite>-<arch> pattern (e.g. 'trixie-amd64'): {resolved}"
+            f"expected <target-name>-<arch> pattern (e.g. 'trixie-native-amd64'): {resolved}"
         )
 
     return resolved
@@ -86,16 +86,16 @@ def _validate_convergence_work_dir(path: Path) -> Path:
     """Return the resolved convergence work path if it passes validation.
 
     The convergence work tree lives at:
-        .orthos/chroot-work/<suite>-<arch>/<repo-name>/build-convergence/
+        .orthos/chroot-work/<target-name>-<arch>/<repo-name>/build-convergence/
         or any parent level down to:
-        .orthos/chroot-work/<suite>-<arch>/<repo-name>/
+        .orthos/chroot-work/<target-name>-<arch>/<repo-name>/
 
     Checks:
       - Must be absolute.
       - Must contain /.orthos/ as a path component.
       - Must have 'chroot-work' immediately after '.orthos'.
       - Must be at least 2 levels below 'chroot-work' (prevents targeting
-        .orthos/chroot-work/ or .orthos/chroot-work/<suite>-<arch>/ alone).
+        .orthos/chroot-work/ or .orthos/chroot-work/<target-name>-<arch>/ alone).
     """
     try:
         resolved = path.resolve()
@@ -118,7 +118,7 @@ def _validate_convergence_work_dir(path: Path) -> Path:
             f"convergence work path must be under .orthos/chroot-work/: {resolved}"
         )
 
-    # Need at least: .orthos / chroot-work / <suite>-<arch> / <repo>
+    # Need at least: .orthos / chroot-work / <target-name>-<arch> / <repo>
     # i.e. at least 2 components after chroot-work.
     chroot_work_idx = orthos_idx + 1
     depth_after_chroot_work = len(parts) - chroot_work_idx - 1

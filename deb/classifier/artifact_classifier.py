@@ -45,7 +45,7 @@ def _load_inventory(inventory_file: Path) -> dict[str, Any]:
     if not inventory_file.exists():
         raise FileNotFoundError(
             f"inventory file not found: {inventory_file}\n"
-            f"Run 'orthos-packager inventory <repo>' first.")
+            f"Run 'orthos inventory <repo>' first.")
 
     data: dict[str,
                Any] = json.loads(inventory_file.read_text(encoding="utf-8"))
@@ -103,7 +103,7 @@ def classify(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         raise ValueError(
             f"inventory is empty: {inventory_file}\n"
             f"The stage produced no files. Fix the build and rerun "
-            f"'orthos-packager stage'.")
+            f"'orthos stage'.")
     package_buckets = _group_into_buckets(entries)
 
     plan_file = orthos / _PLAN_FILE

@@ -263,7 +263,7 @@ def _check_stage_success(orthos: Path) -> None:
     if not result_file.exists():
         raise FileNotFoundError(
             f"stage-result.json not found: {result_file}\n"
-            f"Run 'orthos-packager stage <repo>' first.")
+            f"Run 'orthos stage <repo>' first.")
 
     data = json.loads(result_file.read_text(encoding="utf-8"))
     if not data.get("success", False):
@@ -271,14 +271,14 @@ def _check_stage_success(orthos: Path) -> None:
         log = data.get("log_file", "<no log>")
         raise ValueError(
             f"stage failed at: {step}\n"
-            f"Fix the build error and rerun 'orthos-packager stage'.\n"
+            f"Fix the build error and rerun 'orthos stage'.\n"
             f"See log: {log}")
 
     stage_dir = orthos / "stage"
     if not stage_dir.exists() or not any(stage_dir.rglob("*")):
         raise ValueError(
             f"stage directory is empty: {stage_dir}\n"
-            f"Meson install produced no files. Rerun 'orthos-packager stage'.")
+            f"Meson install produced no files. Rerun 'orthos stage'.")
 
 
 def build_inventory(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:

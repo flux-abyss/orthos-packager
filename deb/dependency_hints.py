@@ -467,6 +467,9 @@ def resolve_build_dependencies(names: list[str]) -> BuildDependencyReport:
 def install_missing_build_dependencies(report: BuildDependencyReport) -> int:
     """Install missing packages from *report* using apt.
 
+    Note: This is a legacy host-side helper and is not used by the main
+    isolated package path.
+
     Returns 0 on success, non-zero on failure.
     """
     missing = report.missing_packages()
@@ -674,6 +677,9 @@ def validate_pkg_config_closure(names: list[str]) -> PkgConfigClosureReport:
 def install_missing_pkgconfig_dependencies(
         report: PkgConfigClosureReport) -> int:
     """Install packages that were found missing during pkg-config closure.
+
+    Note: This is a legacy host-side helper and is not used by the main
+    isolated package path.
 
     Returns 0 on success, non-zero on apt failure.
     """

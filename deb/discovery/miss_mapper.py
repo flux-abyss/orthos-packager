@@ -19,7 +19,7 @@ Resolution order per miss type:
   header-miss:
     1. HEADER_DEP_MAP (curated)
     2. runner.dpkg_search_path (queries inside runner's environment)
-    3. _apt_file_search_host - host mode only; not used in chroot mode
+    3. _apt_file_search_host - legacy / no-runner fallback only; not used in chroot mode
        (chroot isolation: querying the host apt-file database would reflect
        host package metadata, not the chroot's apt sources)
 
@@ -229,14 +229,14 @@ HEADER_DEP_MAP: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Helper: apt-file search (host mode only)
+# Helper: apt-file search (legacy / no-runner fallback only)
 # ---------------------------------------------------------------------------
 
 
 def _apt_file_search_host(header_name: str) -> str | None:
     """Search for a package providing *header_name* using apt-file.
 
-    Host mode only. In isolated mode this function is NOT called - querying
+    Legacy / no-runner fallback only. In isolated mode this function is NOT called - querying
     the host apt-file database would break chroot isolation.
     Returns None if apt-file is not installed, produces no results, or
     times out. apt-file must have been updated for results to be fresh.
@@ -405,12 +405,12 @@ def map_miss_to_package(
             return pkg.strip().lower()
 
         # 2. dpkg_search_path - queries inside chroot in isolated mode,
-        #    queries host in host mode.
+        #    queries host when using legacy HostRunner.
         pkg = _dpkg_search(miss.name) or _dpkg_search(basename)
         if pkg:
             return pkg.strip().lower()
 
-        # 3. _apt_file_search_host: host mode only.
+        # 3. _apt_file_search_host: legacy / no-runner fallback only.
         #    In chroot mode, querying the host apt-file database would reflect
         #    host package metadata rather than the chroot's apt sources, breaking
         #    isolation. Header resolution inside a chroot relies on steps 1 and 2.

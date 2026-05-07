@@ -29,7 +29,7 @@ def _load_analyze(path: Path) -> dict[str, Any]:
     """Read analyze-result.json; raise FileNotFoundError with a hint if absent."""
     if not path.exists():
         raise FileNotFoundError(f"analyze result not found: {path}\n"
-                                f"Run 'orthos-packager analyze <repo>' first.")
+                                f"Run 'orthos analyze <repo>' first.")
     data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data
 

@@ -1,1 +1,1 @@
-"""orthos-packager command handlers package."""
+"""orthos command handlers package."""

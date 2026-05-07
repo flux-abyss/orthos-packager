@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+
 @dataclass(frozen=True)
 class TargetRepoProfile:
     name: str
@@ -27,8 +28,8 @@ _PROFILES = {
         keyring_chroot_path=None,
         origin_markers=(),
     ),
-    "bodhi": TargetRepoProfile(
-        name="bodhi",
+    "debodhi": TargetRepoProfile(
+        name="debodhi",
         apt_source_line=(
             "deb [signed-by=/usr/share/keyrings/bodhi-archive-keyring.gpg]"
             " http://packages.bodhilinux.com/bodhi/ lila b8debbie"
@@ -39,10 +40,13 @@ _PROFILES = {
     ),
 }
 
+
 def get_target_repo_profile(name: str | None) -> TargetRepoProfile:
     """Return the TargetRepoProfile for the given name.
 
-    If *name* is None, returns the "native" profile (no explicit repo overlay).
+    If *name* is None, returns the "native" profile. This native target means
+    no explicit repository overlay is injected (the chroot is created with standard
+    distro sources and does not copy host apt sources).
     Raises ValueError for unknown non-None profile names.
     """
     if name is None:

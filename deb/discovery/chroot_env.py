@@ -1,43 +1,46 @@
-"""Chroot environment lifecycle management for Orthos convergence.
+"""Chroot environment lifecycle management for Orthos packaging.
 
 ChrootEnv manages:
-  - debootstrap-based rootfs creation (Debian trixie minbase)
-  - post-setup: DNS, target repo profile apt source injection, base package install
+  - debootstrap-based rootfs creation using the configured suite/mirror
+    (currently Debian trixie by default)
+  - post-setup coordination: DNS, optional target repo profile injection,
+    and base package installation
   - bind-mount setup and teardown
 
 Separation of concerns:
-  - ChrootEnv owns the filesystem and mounts.
-  - ChrootRunner (runner.py) owns execution inside the chroot.
+  - ChrootEnv owns the chroot filesystem lifecycle and mount lifecycle.
+  - ChrootRunner (runner.py) owns command execution inside the chroot.
   - run_convergence_loop (convergence.py) is filesystem-lifecycle agnostic.
 
 Privilege boundary:
   All root-required operations are delegated to the privileged helper via
-  deb.privileged.client. ChrootEnv contains no direct sudo subprocess
-  calls. The helper performs path validation and operation allowlisting.
+  deb.privileged.client. ChrootEnv contains no direct sudo subprocess calls.
+  The helper performs path validation and operation allowlisting.
 
 Mount lifecycle:
   - setup_mounts() / teardown_mounts() are called by the CLI, not by
     ChrootRunner or convergence logic.
-  - The CLI must call teardown_mounts() in a finally block (primary guarantee).
+  - The CLI must call teardown_mounts() in a finally block as the primary
+    cleanup guarantee.
   - atexit is registered on the first setup_mounts() call as a safety net only.
     Do not rely on atexit as the primary cleanup mechanism.
 
-Target Repo Profile injection:
-  The target repo profile's apt source and keyring are written explicitly into the chroot during creation.
-  It is not copied from the host sources.list. This ensures deterministic and
-  auditable package universe availability (libefl-dev and other EFL packages)
-  regardless of host configuration.
+Target repo profiles:
+  Optional target repo profile sources and keyrings are injected explicitly
+  into the chroot during creation. They are not copied from the host
+  sources.list. This keeps the target package universe deterministic and
+  auditable regardless of host configuration.
 
 Bind-mount tradeoff:
   Build and log directories are bind-mounted from the host into the chroot.
-  Package state is fully isolated; build workspace paths are shared.
-  This is a known, accepted practical compromise for this round.
+  Package state is isolated inside the chroot; workspace paths are shared.
+  This is a known, accepted practical compromise.
 
 Generality note:
-  Target repo profile injection is a package-universe layer specific to this
-  environment. The ChrootEnv class is the only place in the codebase that
-  contains distro/universe-specific setup. The convergence engine itself
-  remains general-purpose.
+  Target repo profiles are package-universe overlays. ChrootEnv coordinates
+  their use during chroot creation, while deb.target_repos defines the profile
+  metadata and orthos-priv performs the privileged filesystem changes. The
+  convergence engine itself remains general-purpose.
 """
 
 from __future__ import annotations
@@ -81,8 +84,8 @@ class ChrootEnv:
     Reuse policy:
       The chroot is considered valid when <chroot_root>/bin/bash exists.
       Packages installed by previous convergence runs accumulate across runs
-      (the chroot behaves like a real system between smoke invocations).
-      To reset: run 'orthos-packager reset-chroot <repo>' or pass
+      (the chroot behaves like a real system between packaging runs).
+      To reset: run 'orthos reset-chroot <repo>' or pass
       refresh=True to ensure_ready().
 
     Disk cost:
@@ -124,8 +127,10 @@ class ChrootEnv:
           5. apt-get update inside chroot
           6. apt-get install -y <base packages> inside chroot
 
-        *repo_set* is None (native/current environment) by default. Pass
-        "debian" or "bodhi" to select an explicit target package universe.
+        *repo_set* is None (native target profile, indicating standard distro
+        sources with no explicit repository overlay, rather than copying host
+        apt sources) by default. Pass "debian" or "debodhi" to select
+        an explicit target package universe.
         All output is appended to log_file (if provided).
         Raises ChrootEnvError on any step failure.
         """
@@ -156,8 +161,10 @@ class ChrootEnv:
     ) -> None:
         """Create the chroot if absent; recreate if refresh=True; else reuse.
 
-        *repo_set* is None (native/current environment) by default. Pass
-        "debian" or "bodhi" to select an explicit target package universe.
+        *repo_set* is None (native target profile, indicating standard distro
+        sources with no explicit repository overlay, rather than copying host
+        apt sources) by default. Pass "debian" or "debodhi" to select
+        an explicit target package universe.
         Raises ChrootEnvError if creation fails.
         """
         if refresh and self._root.exists():

@@ -75,7 +75,7 @@ def _resolve_maintainer(meta: dict[str, Any]) -> str:
             info("warning: config file could not be read, using fallback.")
         else:
             info("warning: no maintainer configured, using fallback.")
-        info("suggestion: run 'orthos-packager config init' to set your identity.")
+        info("suggestion: run 'orthos config init' to set your identity.")
         
     return res["identity"]
 

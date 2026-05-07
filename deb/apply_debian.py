@@ -26,7 +26,7 @@ def apply(meta: dict[str, Any],
 
     if not src.exists():
         raise FileNotFoundError(f"generated debian/ not found: {src}\n"
-                                f"Run 'orthos-packager generate {repo}' first.")
+                                f"Run 'orthos generate {repo}' first.")
 
     overwritten = False
     info("applying generated debian/ to repo")

@@ -1,4 +1,4 @@
-"""orthos-packager – entry point."""
+"""orthos – entry point."""
 
 import sys
 from pathlib import Path
@@ -35,7 +35,7 @@ def probe(repo_path: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run the orthos-packager command-line interface."""
+    """Run the orthos command-line interface."""
     parser = build_parser()
     args = parser.parse_args()
 

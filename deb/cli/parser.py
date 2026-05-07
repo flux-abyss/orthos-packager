@@ -1,4 +1,4 @@
-"""Parser construction for orthos-packager CLI."""
+"""Parser construction for orthos CLI."""
 
 import argparse
 
@@ -10,7 +10,6 @@ def _add_package_args(p: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help="Local path to the repository.",
     )
-
 
     p.add_argument(
         "--refresh-chroot",
@@ -26,9 +25,12 @@ def _add_package_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--target-repo-set",
-        choices=["debian", "bodhi"],
+        choices=["debian", "debodhi"],
         default=None,
-        help="Target package universe override (default: native/current environment).",
+        help=(
+            "Target package universe override. Default is native: "
+            "standard distro sources with no explicit repo overlay."
+        ),
     )
     p.add_argument(
         "--install-host",
@@ -53,7 +55,7 @@ def _add_package_args(p: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="orthos-packager",
+        prog="orthos",
         description="Deterministic Debian packager for Meson projects.",
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -165,9 +167,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reset_chroot_p.add_argument(
         "--target-repo-set",
-        choices=["debian", "bodhi"],
+        choices=["debian", "debodhi"],
         default=None,
-        help="Target package universe whose shared chroot should be reset (default: native/current environment).",
+        help="Target package universe whose shared chroot should be reset (default: native target profile, indicating standard distro sources with no explicit repository overlay).",
     )
 
     config_p = sub.add_parser(

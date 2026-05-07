@@ -58,7 +58,7 @@ def _load_build_result(path: Path) -> dict[str, Any]:
     """Read build-result.json; raise FileNotFoundError if absent."""
     if not path.exists():
         raise FileNotFoundError(f"build result not found: {path}\n"
-                                f"Run 'orthos-packager build <repo>' first.")
+                                f"Run 'orthos build <repo>' first.")
     data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data
 

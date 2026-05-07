@@ -1,4 +1,4 @@
-"""Package report generator for orthos-packager.
+"""Package report generator for orthos.
 
 Reads existing Orthos JSON result files and emits:
   .orthos/<project>/package-report.txt   (human-readable)

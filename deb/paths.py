@@ -19,7 +19,7 @@ def chroot_target_name(suite: str, target: str | None) -> str:
     When *target* is None or empty, "native" is used so the naming is
     explicit and consistent regardless of how the caller obtained the value.
 
-    Example: chroot_target_name("trixie", "bodhi") -> "trixie-bodhi"
+    Example: chroot_target_name("trixie", "debodhi") -> "trixie-debodhi"
              chroot_target_name("trixie", None)    -> "trixie-native"
     """
     return f"{suite}-{target or 'native'}"
@@ -30,9 +30,10 @@ def shared_chroot_dir(target_name: str) -> Path:
 
     Layout:  .orthos/chroots/<target-name>-<arch>/
 
-    The shared chroot lives outside every per-project workspace so that
-    per-project directories (.orthos/<repo>/) contain only user-owned files
-    and can be removed with plain 'rm -rf' without requiring sudo.
+    The shared chroot lives outside every per-project workspace. Note that
+    while the per-project workspace (.orthos/<repo>/) is mostly user-owned,
+    certain steps (such as bind-mounted builds) might leave root-owned files;
+    such root-owned leftovers are cleaned through orthos-priv where needed.
 
     The chroot itself may be root-owned (created by orthos-priv); that is
     expected and acceptable.
@@ -48,10 +49,10 @@ def shared_convergence_build_dir(target_name: str, repo_name: str) -> Path:
 
     This directory is bind-mounted into the shared chroot as /orthos/build
     during convergence.  Because Meson runs as root inside the chroot, the
-    files it creates here are root-owned.  Placing this tree under
-    .orthos/chroot-work/ (not under .orthos/<repo>/) means the per-project
-    workspace (.orthos/<repo>/) contains only user-owned files and can be
-    removed with plain 'rm -rf' without requiring sudo.
+    files it creates here are root-owned. Placing this tree under
+    .orthos/chroot-work/ (not under .orthos/<repo>/) isolates major root-owned
+    build trees so they can be securely cleaned by reset-chroot via orthos-priv,
+    keeping the per-project workspace (.orthos/<repo>/) primarily user-owned.
 
     The chroot-work tree is cleaned by reset-chroot via orthos-priv.
     """

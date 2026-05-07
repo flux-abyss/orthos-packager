@@ -136,7 +136,7 @@ def _cleanup_transient(orthos: Path) -> None:
 def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """Run dpkg-buildpackage using debian/ from the source repo."""
     repo = Path(meta["repo_path"])
-    # Allow callers (e.g. smoke) to redirect the orthos workspace so that
+    # Allow callers (e.g. packaging) to redirect the orthos workspace so that
     # build-result.json and artifacts land in the original repo's .orthos dir
     # even when building from an isolated source copy.
     if "_orthos_override" in meta:
@@ -148,7 +148,7 @@ def build(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     if not dest_debian.exists():
         raise FileNotFoundError(
             f"repo debian/ not found: {dest_debian}\n"
-            f"Run 'orthos-packager apply {repo}' first."
+            f"Run 'orthos apply {repo}' first."
         )
 
     logs_dir = orthos / "logs"
