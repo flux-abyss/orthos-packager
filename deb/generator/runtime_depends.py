@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from deb.deps import infer_dependencies
+from deb.runtime_dependency_inference import infer_dependencies
 from deb.resolution.debian import resolve_runtime_dependencies
 from deb.resolution.oracle import AptOracle
 from deb.utils.log import info

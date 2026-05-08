@@ -1,4 +1,4 @@
-"""Dependency inference for Python, GI, and CLI usage."""
+"""Infer runtime dependencies from source and staged artifact evidence."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ PYTHON_IMPORT_MAP: dict[str, str] = {
     "gi": "python3-gi",
     "nltk": "python3-nltk",
     "Xlib": "python3-xlib",
+    "requests": "python3-requests",
+    "yaml": "python3-yaml",
+    "PIL": "python3-pil",
+    "dbus": "python3-dbus",
+    "apt": "python3-apt",
 }
 
 GI_NAMESPACE_MAP: dict[str, list[str]] = {
@@ -23,10 +28,37 @@ GI_NAMESPACE_MAP: dict[str, list[str]] = {
     "Vte": ["gir1.2-vte-2.91"],
     "Notify": ["gir1.2-notify-0.7"],
     "Pango": ["gir1.2-pango-1.0"],
+    "AppIndicator3": ["gir1.2-ayatanaappindicator3-0.1"],
 }
 
 CLI_COMMAND_MAP: dict[str, str] = {
     "xclip": "xclip",
+    "debootstrap": "debootstrap",
+    "apt-file": "apt-file",
+    "apt-get": "apt",
+    "apt-cache": "apt",
+    "dpkg": "dpkg",
+    "dpkg-deb": "dpkg",
+    "dpkg-buildpackage": "dpkg-dev",
+    "meson": "meson",
+    "ninja": "ninja-build",
+    "pkg-config": "pkgconf",
+    "pkgconf": "pkgconf",
+}
+
+# Conservative map from PyPI Requires-Dist names to Debian package names.
+# Only well-known, unambiguous mappings are included.
+# False negatives are acceptable; false positives must be avoided.
+REQUIRES_DIST_MAP: dict[str, str] = {
+    "requests": "python3-requests",
+    "pyyaml": "python3-yaml",
+    "pillow": "python3-pil",
+    "dbus-python": "python3-dbus",
+    "python-apt": "python3-apt",
+    "pygobject": "python3-gi",
+    "tomli": "python3-tomli",
+    "packaging": "python3-packaging",
+    "setuptools": "python3-setuptools",
 }
 
 
@@ -72,6 +104,7 @@ def infer_dependencies(
         _scan_python_file(py_file, report)
 
     if stage_dir is not None:
+        _scan_dist_info_metadata(stage_dir, report)
         _scan_elf_tree(stage_dir, report)
 
     return report
@@ -104,6 +137,12 @@ def _scan_python_file(path: Path, report: DependencyReport) -> None:
     except SyntaxError:
         return
 
+    imported_from_subprocess = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for name in node.names:
+                imported_from_subprocess.add(name.name)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -128,6 +167,20 @@ def _scan_python_file(path: Path, report: DependencyReport) -> None:
                                    pkg,
                                    f"import {top}",
                                    provenance="python-import")
+                # Detect: from gi.repository import Gtk, Gio, ...
+                # Extract each alias name as a GI namespace.
+                if node.module in ("gi.repository", "gi") or top == "gi":
+                    for alias in node.names:
+                        ns = alias.name
+                        if ns in GI_NAMESPACE_MAP:
+                            report.gi_namespaces.add(ns)
+                            reason = f"from gi.repository import {ns}"
+                            for gi_pkg in GI_NAMESPACE_MAP[ns]:
+                                report.depends.add(gi_pkg)
+                                _record_reason(report,
+                                               gi_pkg,
+                                               reason,
+                                               provenance="gi-namespace")
 
         elif _is_gi_require_version_call(node):
             call = cast(ast.Call, node)
@@ -142,7 +195,7 @@ def _scan_python_file(path: Path, report: DependencyReport) -> None:
                                    reason,
                                    provenance="gi-namespace")
 
-        elif _is_subprocess_command(node):
+        elif _is_subprocess_command(node, imported_from_subprocess):
             call = cast(ast.Call, node)
             command = _extract_command_name(call)
             if command:
@@ -186,7 +239,7 @@ def _gi_reason(node: ast.Call, namespace: str) -> str:
     return f"gi namespace {namespace}"
 
 
-def _is_subprocess_command(node: ast.AST) -> bool:
+def _is_subprocess_command(node: ast.AST, imported_from_subprocess: set[str]) -> bool:
     """Return True when *node* is a subprocess command invocation we track."""
     if not isinstance(node, ast.Call):
         return False
@@ -200,6 +253,8 @@ def _is_subprocess_command(node: ast.AST) -> bool:
     }:
         if isinstance(func.value, ast.Name) and func.value.id == "subprocess":
             return True
+    elif isinstance(func, ast.Name) and func.id in imported_from_subprocess:
+        return True
     return False
 
 
@@ -226,6 +281,43 @@ def _extract_command_name(node: ast.Call) -> str | None:
             return parts[0]
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Requires-Dist scanning from staged dist-info
+# ---------------------------------------------------------------------------
+
+def _scan_dist_info_metadata(stage_dir: Path, report: DependencyReport) -> None:
+    """Scan staged *.dist-info/METADATA files for Requires-Dist entries.
+
+    For each Requires-Dist line found, map the distribution name conservatively
+    to a Debian package using REQUIRES_DIST_MAP.  Extras and version
+    constraints are ignored — we only record the bare distribution name.
+    Unknown names are silently skipped (false negatives preferred).
+    """
+    for metadata_file in stage_dir.rglob("*.dist-info/METADATA"):
+        try:
+            text = metadata_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if not line.startswith("Requires-Dist:"):
+                continue
+            # Format: Requires-Dist: <name> [version] [; extras]
+            # Strip prefix, split on first whitespace or semicolon.
+            raw = line[len("Requires-Dist:"):].strip()
+            # Drop extras marker and version constraint.
+            bare = raw.split(";")[0].strip()
+            bare = bare.split()[0].strip() if bare else ""
+            if not bare:
+                continue
+            pkg = REQUIRES_DIST_MAP.get(bare.lower())
+            if pkg:
+                report.depends.add(pkg)
+                _record_reason(report,
+                               pkg,
+                               f"Requires-Dist: {bare}",
+                               provenance="requires-dist")
 
 
 # ---------------------------------------------------------------------------

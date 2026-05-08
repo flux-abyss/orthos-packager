@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from deb.deps import _record_reason
+from deb.runtime_dependency_inference import _record_reason
 from deb.generator.descriptions import _pkg_descriptions
 from deb.generator.inter_pkg import (
     dev_pkg_main_dep,

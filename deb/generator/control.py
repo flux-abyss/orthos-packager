@@ -41,6 +41,7 @@ def _gen_control(
         if build_backend == "python-pyproject":
             arch = "all"
             depends_parts = ["${python3:Depends}", "${misc:Depends}"]
+            depends_parts.extend(pkg.get("extra_depends", []))
         else:
             arch = _pkg_arch(pkg)
             # ${shlibs:Depends} is only meaningful for arch-specific packages that
