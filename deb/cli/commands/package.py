@@ -12,6 +12,7 @@ from deb.paths import (
     orthos_dir,
     shared_chroot_dir,
     shared_convergence_build_dir,
+    shared_runtime_smoke_chroot_dir,
     shared_stage_build_dir,
 )
 from deb.privileged import client as priv_client
@@ -353,6 +354,56 @@ def _cmd_package_inner(
     from deb.runtime_smoke_plan import write_runtime_smoke_plan
     stage_target = orthos / "stage"
     write_runtime_smoke_plan(meta, stage_target, orthos)
+
+    if getattr(args, "no_runtime_smoke", False):
+        info("package: runtime smoke skipped by user (--no-runtime-smoke)")
+    else:
+        smoke_plan_path = orthos / "runtime-smoke-plan.json"
+        smoke_log = logs_dir / "runtime-smoke.log"
+        smoke_chroot_root = shared_runtime_smoke_chroot_dir(chroot_name)
+        smoke_env = ChrootEnv(smoke_chroot_root)
+        smoke_chroot_log = logs_dir / "runtime-smoke-chroot-setup.log"
+        try:
+            # runtime smoke must not reuse a dirty validation chroot because
+            # previously installed deps can mask missing Depends.
+            smoke_env.ensure_ready(
+                suite=args.chroot_suite,
+                repo_set=args.target_repo_set,
+                refresh=True,
+                log_file=smoke_chroot_log,
+            )
+        except ChrootEnvError as exc:
+            error(f"package: runtime smoke chroot setup failed: {exc}")
+            return 1
+
+        from deb.runtime_smoke_runner import run_runtime_smoke_plan, RuntimeSmokeResult
+        smoke_result: RuntimeSmokeResult = run_runtime_smoke_plan(
+            chroot_env=smoke_env,
+            artifacts_dir=artifacts_dir,
+            smoke_plan_path=smoke_plan_path,
+            log_file=smoke_log,
+        )
+
+        if smoke_result.status == "skipped":
+            info(
+                f"package: runtime smoke skipped "
+                f"(targets={smoke_result.targets_total}; "
+                f"reason: no plan, no targets, or no artifacts)"
+            )
+        elif smoke_result.status == "success":
+            info(
+                f"package: runtime smoke passed "
+                f"({smoke_result.targets_passed}/{smoke_result.targets_total} targets)"
+            )
+        else:
+            error(
+                f"package: runtime smoke FAILED "
+                f"({smoke_result.targets_failed}/{smoke_result.targets_total} targets failed). "
+                f"see log: {smoke_log}"
+            )
+            for f in smoke_result.failures:
+                error(f"  smoke failure: [{f.get('kind','?')}] {f.get('name','?')}")
+            return 1
 
     if not args.install_host:
         info("package complete ✔")

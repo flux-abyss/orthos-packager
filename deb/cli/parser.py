@@ -51,6 +51,17 @@ def _add_package_args(p: argparse.ArgumentParser) -> None:
         default=[],
         help="Pass a Meson option as KEY=VALUE (may be repeated).",
     )
+    p.add_argument(
+        "--no-runtime-smoke",
+        action="store_true",
+        default=False,
+        dest="no_runtime_smoke",
+        help=(
+            "Skip runtime smoke validation after build. "
+            "The smoke plan is still written but no commands are executed. "
+            "By default, runtime smoke runs when a smoke plan exists and has targets."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

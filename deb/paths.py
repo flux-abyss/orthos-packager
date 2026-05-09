@@ -75,3 +75,16 @@ def shared_stage_build_dir(target_name: str, repo_name: str) -> Path:
     return base / f"{target_name}-{_CHROOT_ARCH}" / repo_name / "build-stage"
 
 
+def shared_runtime_smoke_chroot_dir(target_name: str) -> Path:
+    """Return the path for an isolated runtime smoke validation chroot.
+
+    Layout:  .orthos/chroots/<target-name>-<arch>-runtime-smoke/
+
+    This chroot is intentionally separate from the build/convergence chroot.
+    It starts clean so that missing runtime dependencies are NOT masked by
+    build-time packages that happen to be installed in the build chroot.
+    """
+    base = Path.cwd() / ".orthos" / "chroots"
+    return base / f"{target_name}-{_CHROOT_ARCH}-runtime-smoke"
+
+
