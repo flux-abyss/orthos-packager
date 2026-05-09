@@ -350,6 +350,10 @@ def _cmd_package_inner(
     for p in debs:
         info(f"  artifact: {p}")
 
+    from deb.runtime_smoke_plan import write_runtime_smoke_plan
+    stage_target = orthos / "stage"
+    write_runtime_smoke_plan(meta, stage_target, orthos)
+
     if not args.install_host:
         info("package complete ✔")
         return 0
