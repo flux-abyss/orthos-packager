@@ -97,6 +97,8 @@ def _collect(orthos: Path, timings: dict[str, float] | None = None) -> dict[str,
     ]
     total_artifact_bytes = sum(a["size"] for a in artifact_info)
 
+    smoke       = _read_json(orthos / "runtime-smoke-result.json")
+
     return {
         # identity
         "project_name":      meta.get("project_name") or orthos.name,
@@ -131,6 +133,14 @@ def _collect(orthos: Path, timings: dict[str, float] | None = None) -> dict[str,
         # artifacts
         "artifacts":         artifact_info,
         "total_artifact_bytes": total_artifact_bytes,
+        # runtime smoke
+        "smoke_status":          smoke.get("status") or "",
+        "smoke_skipped_by_user": smoke.get("skipped_by_user", False),
+        "smoke_targets_total":   smoke.get("targets_total", 0),
+        "smoke_targets_passed":  smoke.get("targets_passed", 0),
+        "smoke_targets_failed":  smoke.get("targets_failed", 0),
+        "smoke_missing_deps":    smoke.get("missing_dependencies", []),
+        "smoke_log_file":        smoke.get("log_file") or "",
         # paths
         "logs_dir":          str(orthos / "logs"),
         "orthos_dir":        str(orthos),
@@ -261,6 +271,30 @@ def _render_txt(data: dict[str, Any], status: str, elapsed: float) -> str:
         _section(L, "Phase Timings")
         for phase, secs in timings.items():
             L.append(f"  {phase+':':<20}{_fmt_duration(secs)}")
+
+    # ---- Runtime Smoke ----
+    smoke_status = data.get("smoke_status") or ""
+    if smoke_status:
+        _section(L, "Runtime Smoke")
+        if data.get("smoke_skipped_by_user"):
+            L.append("  Status:      skipped (--no-runtime-smoke)")
+        else:
+            L.append(f"  Status:      {smoke_status}")
+            total = data.get("smoke_targets_total", 0)
+            passed = data.get("smoke_targets_passed", 0)
+            if total:
+                L.append(f"  Targets:     {passed}/{total} passed")
+        smoke_log = data.get("smoke_log_file") or ""
+        if smoke_log:
+            L.append(f"  Log:         {smoke_log}")
+        missing = data.get("smoke_missing_deps") or []
+        if missing:
+            L.append("  Missing dependency candidates:")
+            for dep in missing:
+                name = dep.get("name", "?")
+                pkg  = dep.get("debian_package") or "(unknown)"
+                kind = dep.get("kind", "")
+                L.append(f"    {name} -> {pkg}  [{kind}]")
 
     # ---- Next steps ----
     _section(L, "Next Steps")

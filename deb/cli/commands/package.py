@@ -355,8 +355,11 @@ def _cmd_package_inner(
     stage_target = orthos / "stage"
     write_runtime_smoke_plan(meta, stage_target, orthos)
 
+    _smoke_result_data: dict = {"status": "skipped", "skipped_by_user": False}
+
     if getattr(args, "no_runtime_smoke", False):
         info("package: runtime smoke skipped by user (--no-runtime-smoke)")
+        _smoke_result_data["skipped_by_user"] = True
     else:
         smoke_plan_path = orthos / "runtime-smoke-plan.json"
         smoke_log = logs_dir / "runtime-smoke.log"
@@ -384,6 +387,17 @@ def _cmd_package_inner(
             log_file=smoke_log,
         )
 
+        _smoke_result_data = {
+            "status": smoke_result.status,
+            "skipped_by_user": False,
+            "targets_total": smoke_result.targets_total,
+            "targets_passed": smoke_result.targets_passed,
+            "targets_failed": smoke_result.targets_failed,
+            "failures": smoke_result.failures,
+            "missing_dependencies": smoke_result.missing_dependencies,
+            "log_file": str(smoke_log),
+        }
+
         if smoke_result.status == "skipped":
             info(
                 f"package: runtime smoke skipped "
@@ -403,7 +417,19 @@ def _cmd_package_inner(
             )
             for f in smoke_result.failures:
                 error(f"  smoke failure: [{f.get('kind','?')}] {f.get('name','?')}")
-            return 1
+
+    # Write result JSON so the report module can read it generically.
+    import json as _smoke_json
+    try:
+        (orthos / "runtime-smoke-result.json").write_text(
+            _smoke_json.dumps(_smoke_result_data, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        error(f"package: failed to write runtime-smoke-result.json: {exc}")
+
+    if _smoke_result_data.get("status") == "failed":
+        return 1
 
     if not args.install_host:
         info("package complete ✔")
