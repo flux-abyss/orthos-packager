@@ -34,6 +34,7 @@ from deb.generator.control import _gen_control
 from deb.generator.build_depends import _gen_build_depends
 from deb.generator.runtime_depends import _runtime_dep_state
 from deb.resolution.oracle import make_oracle
+from deb.runtime_dependency_convergence import load_runtime_convergence_depends
 from deb.utils.fs import ensure_dir, write_json
 from deb.utils.log import info
 
@@ -173,6 +174,25 @@ def generate(meta: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     primary_pkg_name = _pkg_name(app_name, primary, primary) if primary else app_name
 
     generated_pkg_names = frozenset(p["name"] for p in output_packages)
+
+    # Load runtime-smoke-discovered dep candidates from the convergence state
+    # file (written by write_runtime_convergence_state after a smoke failure).
+    # Merge them into every package's extra_depends before apt validation so
+    # they flow through the same verification path as statically inferred deps.
+    # Packages for which no convergence state exists are unaffected.
+    convergence_extra = load_runtime_convergence_depends(orthos)
+    if convergence_extra:
+        info(f"generate: runtime convergence extra depends: {convergence_extra}")
+        for pkg in output_packages:
+            existing = list(pkg.get("extra_depends", []))
+            # Append only entries not already present, preserving order.
+            seen_existing = set(existing)
+            for dep in convergence_extra:
+                if dep not in seen_existing:
+                    existing.append(dep)
+                    seen_existing.add(dep)
+            pkg["extra_depends"] = existing
+
     for pkg in output_packages:
         pkg["extra_depends"] = validate_extra_depends(
             pkg.get("extra_depends", []),
