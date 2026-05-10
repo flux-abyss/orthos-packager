@@ -27,6 +27,7 @@ class RuntimeSmokeResult:
     targets_passed: int
     targets_failed: int
     failures: list[dict[str, Any]] = field(default_factory=list)
+    missing_dependencies: list[dict[str, Any]] = field(default_factory=list)
     log_path: Path | None = None
 
 
@@ -358,7 +359,31 @@ def run_runtime_smoke_plan(
             chroot_env.teardown_mounts()
 
     # ------------------------------------------------------------------
-    # Step 7: build result
+    # Step 7: infer missing runtime dependencies from failures
+    # ------------------------------------------------------------------
+    from deb.runtime_smoke_failures import (
+        infer_missing_runtime_dependencies,
+        format_candidates_for_log,
+    )
+    missing_deps = infer_missing_runtime_dependencies(failures)
+    missing_deps_as_dicts: list[dict[str, Any]] = [
+        {
+            "kind": c.kind,
+            "name": c.name,
+            "debian_package": c.debian_package,
+            "evidence": c.evidence,
+            "source": c.source,
+        }
+        for c in missing_deps
+    ]
+    if missing_deps:
+        _log(log_file, "\n" + format_candidates_for_log(missing_deps))
+        for c in missing_deps:
+            pkg_str = c.debian_package if c.debian_package else "(unknown)"
+            info(f"smoke-runner: missing dep candidate: {c.name} -> {pkg_str} [{c.kind}]")
+
+    # ------------------------------------------------------------------
+    # Step 8: build result
     # ------------------------------------------------------------------
     status: Literal["success", "failed", "skipped"] = (
         "success" if targets_failed == 0 else "failed"
@@ -373,5 +398,6 @@ def run_runtime_smoke_plan(
         targets_passed=targets_passed,
         targets_failed=targets_failed,
         failures=failures,
+        missing_dependencies=missing_deps_as_dicts,
         log_path=log_file,
     )
